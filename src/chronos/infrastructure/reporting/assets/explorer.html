@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<style>
+:root {
+  color-scheme: light;
+  --surface: #fcfcfb;
+  --page: #f9f9f7;
+  --ink: #0b0b0b;
+  --secondary: #52514e;
+  --muted: #898781;
+  --grid: #e1e0d9;
+  --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 24px 20px 56px;
+  background: var(--page); color: var(--ink); font-family: var(--font);
+}
+.wrap { max-width: 1400px; margin: 0 auto; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+.subtitle { color: var(--muted); font-size: 13px; }
+.controls {
+  display: flex; flex-wrap: wrap; gap: 22px; align-items: flex-end;
+  background: var(--surface); border: 1px solid var(--grid); border-radius: 10px;
+  padding: 12px 16px; margin: 18px 0;
+}
+.group { display: flex; flex-direction: column; gap: 6px; }
+.group > span {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--secondary);
+}
+.buttons { display: flex; gap: 0; }
+.buttons button {
+  font: inherit; font-size: 13px; padding: 6px 14px; cursor: pointer;
+  background: var(--page); color: var(--secondary);
+  border: 1px solid var(--grid); border-right-width: 0;
+}
+.buttons button:first-child { border-radius: 6px 0 0 6px; }
+.buttons button:last-child { border-radius: 0 6px 6px 0; border-right-width: 1px; }
+.buttons button[aria-pressed="true"] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+label.toggle { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--secondary); }
+input[type="date"], input[type="number"], select {
+  font: inherit; font-size: 13px; padding: 5px 8px; color: var(--ink);
+  background: var(--page); border: 1px solid var(--grid); border-radius: 6px;
+}
+.buttons button[disabled] { opacity: .45; cursor: default; }
+input[disabled], select[disabled] { opacity: .45; }
+#replay-group.on > span { color: var(--ink); font-weight: 600; }
+#chart { background: var(--surface); border: 1px solid var(--grid); border-radius: 10px; }
+.legend {
+  display: flex; flex-wrap: wrap; gap: 18px; margin-top: 14px;
+  font-size: 12px; color: var(--secondary);
+}
+.legend i { display: inline-block; width: 22px; height: 3px; margin-right: 6px; vertical-align: middle; }
+.legend .box { height: 12px; opacity: .18; }
+footer { margin-top: 26px; font-size: 12px; color: var(--muted); }
+footer code { background: var(--surface); border: 1px solid var(--grid); border-radius: 4px; padding: 1px 5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>__HEADER__</h1>
+    <p class="subtitle">__SUBTITLE__</p>
+  </header>
+
+  <div class="controls">
+    <div class="group">
+      <span title="Atajos de teclado: d = Diario, 4 = H4, 1 = H1, m = M15, 5 = M5.
+Se ignoran mientras el foco está en un campo de texto.">Temporalidad</span>
+      <div class="buttons" id="tf-buttons"></div>
+    </div>
+    <div class="group">
+      <span>Vista</span>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <div class="buttons" id="view-buttons">
+          <button type="button" data-view="candles">Velas</button>
+          <button type="button" data-view="line">Líneas (cierres)</button>
+        </div>
+        <div class="buttons">
+          <button type="button" id="zoom-reset" title="Suelta el zoom hecho a mano y vuelve al
+encuadre automático. También con doble clic sobre el gráfico.">Ajustar</button>
+        </div>
+      </div>
+    </div>
+    <div class="group">
+      <span>Periodo</span>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <div class="buttons" id="preset-buttons"></div>
+        <div class="buttons">
+          <button type="button" id="prev" title="Ventana anterior (flecha izquierda)">◀</button>
+          <button type="button" id="next" title="Ventana siguiente (flecha derecha)">▶</button>
+        </div>
+      </div>
+    </div>
+    <div class="group">
+      <span>Fechas (UTC)</span>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <input type="date" id="from" aria-label="Desde">
+        <span style="color:var(--muted)">→</span>
+        <input type="date" id="to" aria-label="Hasta">
+      </div>
+    </div>
+    <div class="group">
+      <span>Capas</span>
+      <div style="display:flex; gap:16px; flex-wrap:wrap;">
+        <span id="volume-layer">
+          <label class="toggle" title="El VOLUMEN de cada vela, al pie del panel del precio y en su
+propio eje, como el indicador de volumen de la plataforma: verde si la vela cierra por encima
+de su apertura, rojo si no. Sólo en las ÚLTIMAS 40 velas hasta el borde derecho (en replay,
+hasta el reloj). Es el dato del histórico tal cual (en Dukascopy, el volumen de
+ticks sumado al agregar). ES DIBUJO: no decide nada.">
+            <input type="checkbox" id="layer-volume" checked> Volumen</label>
+        </span>
+      </div>
+    </div>
+    <div class="group" id="replay-group">
+      <span title="Reproduce la historia vela a vela desde una fecha; en cada paso
+sólo se dibuja lo que el motor ya sabía a esa hora">
+        Replay (desde una fecha)
+      </span>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <input type="date" id="replay-date" aria-label="Fecha de arranque del replay">
+        <div class="buttons">
+          <button type="button" id="replay-start" title="Arranca el replay en esa fecha">
+            Empezar</button>
+          <button type="button" id="replay-back" title="Un paso atrás (flecha izquierda)">
+            ◀◀</button>
+          <button type="button" id="replay-step" title="Siguiente paso (flecha derecha)">
+            ▶▶</button>
+          <button type="button" id="replay-play"
+                  title="Reproducir sin parar (barra espaciadora)">▶</button>
+          <button type="button" id="replay-exit" title="Vuelve al rango de partida">
+            Salir</button>
+        </div>
+        <label class="toggle" title="Arma la vela en curso con las velas de la
+temporalidad inferior. El motor no la ve hasta que cierra.">
+          <input type="checkbox" id="replay-forming" checked> Vela en formación</label>
+        <label class="toggle">Velocidad
+          <select id="replay-speed" aria-label="Velocidad del replay">
+            <option value="1500">Lenta</option>
+            <option value="700" selected>Normal</option>
+            <option value="250">Rápida</option>
+            <option value="60">Muy rápida</option>
+          </select>
+        </label>
+        <label class="toggle">Velas a la vista
+          <input type="number" id="replay-window" value="180" min="20" max="2000" step="20"
+                 style="width:86px" aria-label="Velas visibles en el replay">
+        </label>
+      </div>
+    </div>
+    <div class="group" id="sim-group">
+      <span title="Dos cajas como las de cualquier plataforma para SIMULAR una entrada a
+mano. El botón ARMA (Largo o Corto) y el clic siguiente sobre el gráfico PLANTA la caja
+con la entrada en ese precio y esa vela: el objetivo va pegado por encima de la entrada y
+el riesgo por debajo, al revés en corto.
+Después se arrastra: el borde de fuera de cada caja mueve el objetivo o el stop, la línea
+de la entrada mueve el conjunto entero, los bordes de los lados alargan el tramo y el
+interior lo desplaza todo. La etiqueta dice los pips de cada lado y el R:R; un pip es la
+última cifra del precio. Escape desarma sin plantar nada.
+ES DIBUJO A MANO Y NADA MÁS: no hay orden, ni ejecución, ni resultado. Nadie mira si el
+precio llegó al objetivo o al stop, no sale de la pantalla y el motor no la ve. El
+proyecto sigue sin entradas.">
+        Simular entrada
+      </span>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <div class="buttons" id="sim-buttons"></div>
+        <div class="buttons" id="sim-ratio" title="R:R fijo: el objetivo se pone a tantas veces
+el riesgo. Con uno puesto, mover el stop mueve el objetivo con él y el ratio no cambia.
+Arrastrar el objetivo suelta el candado y deja el ratio a mano: ningún botón queda pulsado
+y el estado lo dice."></div>
+        <div class="buttons">
+          <button type="button" id="sim-clear" title="Quita la caja simulada">Quitar</button>
+        </div>
+      </div>
+    </div>
+    <div class="group" id="rect-group">
+      <span title="RECUADROS que dibujas TÚ para señalar lo que ves. Cada botón ARMA el suyo y
+el clic siguiente sobre el gráfico lo PLANTA ahí; después se arrastra: los bordes de arriba y
+abajo mueven el techo y el suelo, los de los lados alargan el tramo y por dentro se desplaza
+entero. Escape desarma sin plantar nada.
+Se pueden marcar VARIOS de cada nombre y se numeran por nombre en el orden en que se plantan.
+Los nombres salen de config/explorer.yaml (marks.rects): cámbialos cuando la estrategia tenga
+vocabulario propio.
+Cada nombre lleva SU COLOR y todos van punteados a propósito: ninguna capa calculada usará
+esos colores, así que lo que se vea así lo has puesto tú.
+NO LOS HA DETECTADO NADA: no hay ninguna regla detrás, no salen de la pantalla y el motor no
+se entera de que existen.">
+        Rectángulo
+      </span>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <div class="buttons" id="rect-buttons"></div>
+        <div class="buttons">
+          <button type="button" id="rect-undo" title="Quita el último recuadro plantado">
+            Quitar último</button>
+          <button type="button" id="rect-clear" title="Quita todos los recuadros">
+            Quitar todos</button>
+        </div>
+      </div>
+    </div>
+    <div class="group" id="account-group">
+      <span title="Una cuenta de mentira para poner precio a lo que se dibuja. Se pone el
+CAPITAL y cuánto se arriesga por operación —un % de ese capital o una cantidad fija—, y
+con una caja plantada los tres botones la apuntan: GANADA suma el riesgo por el R:R de esa
+caja, PERDIDA resta el riesgo entero y BE no mueve nada.
+«Deshacer» quita la última y devuelve su caja al gráfico, «Reiniciar» borra las
+operaciones y «Copiar» se lleva el historial entero en texto.
+Cambiar el capital o el riesgo NO toca lo ya apuntado: cada operación guarda los dólares
+que se jugó, y la casilla sólo manda sobre la SIGUIENTE. La curva arranca del capital que
+había puesto al apuntar la primera.
+NO ES DINERO NI ES UN BACKTEST DEL MOTOR: quien decide si una entrada ganó o perdió es el
+propietario mirando el gráfico. Nadie comprueba si el precio llegó al objetivo o al stop y
+el motor no ve ninguna de estas operaciones.">
+        Cuenta simulada
+      </span>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <label class="toggle" title="Capital puesto, en dólares: la base del % de riesgo
+y, sin operaciones apuntadas, el arranque de la curva. Cambiarlo con operaciones apuntadas
+no mueve el saldo: sólo cambia la apuesta de la siguiente.">Capital
+          <input type="number" id="account-initial" min="1" step="10" style="width:92px"
+                 aria-label="Capital puesto en dólares">
+        </label>
+        <label class="toggle" title="Cuánto se arriesga en la SIGUIENTE operación: un
+porcentaje del capital de la casilla de al lado —no del saldo vivo: la apuesta no crece con
+las ganancias— o una cantidad fija en dólares. Para arriesgar más, sube el capital o el
+porcentaje; lo ya apuntado se queda con la apuesta que tenía.">Riesgo
+          <select id="account-mode" aria-label="Cómo se mide el riesgo"></select>
+          <input type="number" id="account-risk" min="0.01" step="0.5" style="width:82px"
+                 aria-label="Riesgo por operación">
+        </label>
+        <div class="buttons" id="account-buttons" title="Apuntan la caja que hay dibujada.
+Sin caja no hay nada que cobrar y los tres están apagados."></div>
+        <div class="buttons">
+          <button type="button" id="account-undo" title="Quita la última operación apuntada y
+devuelve su caja al gráfico">Deshacer</button>
+          <button type="button" id="account-reset" title="Borra las operaciones y vuelve al
+capital de la casilla">Reiniciar</button>
+          <button type="button" id="account-copy" title="Copia al portapapeles la
+configuración, el historial y las estadísticas, en texto">Copiar</button>
+        </div>
+        <strong id="account-summary" style="font-size:13px; font-variant-numeric:tabular-nums;"
+                aria-live="polite"></strong>
+      </div>
+    </div>
+    <div class="group">
+      <span title="Sortea una ventana al azar —con semilla, para poder reabrirla— y la enseña
+pelada: sólo las velas. Marca lo que veas y pulsa Revelar.">Auditoría ciega</span>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <input type="number" id="blind-seed" placeholder="semilla" aria-label="Semilla"
+               style="width:110px">
+        <div class="buttons">
+          <button type="button" id="blind-start" title="Sortea una ventana sin capas">Empezar</button>
+          <button type="button" id="blind-reveal" title="Muestra lo que la venda tapaba">Revelar</button>
+          <button type="button" id="blind-exit" title="Vuelve al rango de partida">Salir</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="chart"></div>
+
+  <div class="legend">
+    <span><i style="background:#1baf7a"></i>vela alcista</span>
+    <span><i style="background:#d03b3b"></i>vela bajista</span>
+    <span><b>SIN ESTRATEGIA</b>: encima del precio no hay ninguna capa calculada. Todo lo que
+      se vea además de las velas y el volumen lo ha puesto una mano —la caja simulada y los
+      recuadros— y el estado de abajo lo dice</span>
+    <span><i class="box" style="background:#1baf7a; opacity:.35"></i>
+      <i class="box" style="background:#d03b3b; opacity:.35"></i><b>VOLUMEN</b> al pie del
+      precio, en las últimas 40 velas: verde si la vela cierra arriba, rojo si abajo. Es el
+      dato del histórico, sin tocar</span>
+    <span>vela hueca a la derecha = vela en formación durante el replay: todavía no ha
+      cerrado</span>
+    <span>arrastrando sobre el EJE DE PRECIOS se comprime o se estira la vertical, y
+      sobre el EJE DE FECHAS se abre o se cierra el gráfico de lado (más o menos velas
+      a la vista, sin mover la última). «Ajustar» devuelve el encuadre automático</span>
+    <span>el zoom hecho a mano (rueda o arrastre) se conserva paso a paso durante el
+      replay: la ventana sólo se desplaza para seguir a la última vela. «Ajustar»
+      o doble clic devuelven el encuadre automático</span>
+    <span>teclas <b>d</b> (Diario), <b>4</b> (H4), <b>1</b> (H1), <b>m</b> (M15) y <b>5</b>
+      (M5) cambian la temporalidad; se ignoran con el foco en un campo de texto</span>
+    <span><i class="box" style="background:#1baf7a; opacity:.22"></i>
+      <i class="box" style="background:#d03b3b; opacity:.22"></i>Entrada SIMULADA a mano
+      («Simular entrada»): la caja verde es el objetivo y la roja el riesgo, colgando de la
+      línea de la entrada —al revés en corto—. El botón arma, el clic planta y después se
+      arrastra: bordes de fuera = stop y objetivo, línea de la entrada = mover la caja
+      entera, bordes de los lados = alargar el tramo. Escape desarma</span>
+    <span>los botones <b>1:1 · 1:2 · 1:3 · 1:4</b> fijan el R:R: el objetivo se planta a
+      esa distancia y mover el stop lo arrastra con él. Arrastrar el objetivo suelta el
+      candado —ningún botón queda pulsado— y el ratio pasa a ser el que se vea</span>
+    <span>la caja simulada dice los pips de cada lado y el R:R; un pip es la última cifra
+      del precio. NO ES UNA OPERACIÓN: no hay orden, ni ejecución, ni resultado, y nadie
+      comprueba si el precio llegó al objetivo o al stop</span>
+    <span><i class="box" style="background:#c0359a; opacity:.5"></i>
+      <i class="box" style="background:#0b8fa8; opacity:.5"></i>
+      <i class="box" style="background:#7c8b12; opacity:.5"></i>RECUADROS marcados A MANO
+      («Rectángulo»): cada nombre con su color, punteados y numerados por nombre en el orden
+      en que se plantan. El botón arma, el clic lo planta y después se arrastra: bordes de
+      arriba y abajo = techo y suelo, bordes de los lados = el tramo, por dentro = moverlo
+      entero. Escape desarma. No los ha detectado nada y no salen de la pantalla</span>
+    <span>con «Cuenta simulada» cada caja lleva además <b>el dinero que se juega</b>: la
+      verde, lo que suma si llega el objetivo; la roja, lo que resta si toca el stop, con el
+      capital y el riesgo puestos en la barra. Los botones <b>Ganada · Perdida · BE</b>
+      apuntan la caja y mueven el saldo, y el estado dice cuánto queda, cuántas operaciones
+      van, el acierto, la R acumulada y la caída máxima. Cambiar el capital o el riesgo
+      sólo cambia la apuesta de la siguiente: lo apuntado se queda con la suya. Lo apunta
+      el propietario a mano: no es dinero, no es un backtest del motor y nadie mira las
+      velas por ti</span>
+  </div>
+
+  <footer>
+    <p id="notes"></p>
+    <p>
+      Precios a 4 decimales. Eje horizontal en UTC; el detalle de cada punto muestra
+      además la hora de la sesión del propietario. Generado el __GENERATED__.
+    </p>
+  </footer>
+</div>
+
+<script id="explorer-data" type="application/json">__DATA__</script>
+<script>__PLOTLY__</script>
+<script>__EXPLORER_JS__</script>
+</body>
+</html>

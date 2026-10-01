@@ -1,0 +1,112 @@
+# Explorador de velas.
+#
+# Aquí NO hay ni un parámetro de estrategia, y es a propósito: este fichero
+# declara de dónde salen las velas y cómo se dibujan, nada de qué se decide.
+# Cuando exista una estrategia, su configuración va en su propio fichero.
+
+symbol: XAUUSD
+
+# Lado del precio con el que se dibuja todo el proyecto: bid | ask | mid.
+# `ask` y `mid` exigen tener descargado también el lado ask: pedirlos sin él
+# falla con un error explícito en vez de inventarse el otro lado.
+price_side: bid
+
+data:
+  # Dukascopy XAUUSD, bid y ask separados, en GMT/UTC. Los produce
+  # `chronos data dukascopy`.
+  #
+  # Tiene que ser M1: la verificación de zona horaria mide el rango medio POR
+  # MINUTO del día y con velas de una hora el pico sólo puede caer en horas en
+  # punto, así que no distingue las 13:30 de las 13:00. Y sin M1 no hay M5 ni
+  # M15: con un histórico H1 esos gráficos se omiten y el explorador lo dice.
+  bid_path: data/processed/XAUUSD_M1_bid.parquet
+  ask_path: ""
+  # Alternativa: un único fichero con columnas bid_open, bid_high, ..., ask_close.
+  path: ""
+  # Zona horaria en la que interpretar el fichero si sus marcas de tiempo son
+  # naíf. Dukascopy exporta en GMT.
+  timezone: UTC
+  start: null # ISO 8601 o null para todo el histórico
+  end: null
+
+# Gráficos del explorador. Se ofrecen de mayor a menor y el primero es el que abre.
+timeframes: [D, H4, H1, M15, M5]
+
+# Las velas dependen ÍNTEGRAMENTE de estos dos valores: cambiarlos cambia lo que
+# se ve. `NY_17:00` es la rejilla de **cTrader / Pepperstone**, que es donde se
+# va a ejecutar en vivo: la estrategia tiene que ver las mismas velas en
+# backtest, paper y live, así que manda la plataforma de ejecución, no la de
+# dibujo.
+#
+# Comprobado vela a vela sobre el M1 de Dukascopy (bid), 16-01-2023:
+#   cTrader, vela `02:00` en UTC-4  -> 06:00-10:00 UTC
+#     O 1919.47  H 1920.78  L 1910.82  C 1917.54   (feed Pepperstone)
+#     O 1919.43  H 1920.74  L 1910.66  C 1917.47   (nuestro M1 Dukascopy)
+#   FXReplay con datos Dukascopy da esa misma ventana al 0,001.
+#   TradingView (Pepperstone) corta una hora después —07:00-11:00 UTC, o sea
+#   NY_18:00— porque arma las velas con la sesión del símbolo y no con la hora
+#   del servidor del broker.
+#
+# El horario de verano es el de EE. UU., no el europeo. Los dos sólo se
+# distinguen las ~3 semanas de marzo y la de noviembre en que los cambios de
+# hora no coinciden, así que se comprobó dentro de esa ventana, 15-03-2023:
+#   cTrader, vela `05:00` en UTC-4  -> 09:00-13:00 UTC
+#     O 1887.51  H 1930.22  L 1886.65  C 1927.77   (feed Pepperstone)
+#     O 1887.43  H 1930.09  L 1886.53  C 1927.71   (nuestro M1 Dukascopy)
+#
+# Sólo H4 y el diario llevan desplazamiento: la rejilla de M5, M15 y H1 —cinco
+# minutos, cuartos de hora y horas en punto— es la misma en todas las
+# plataformas.
+aggregation:
+  # Desplazamiento del inicio de las velas H4 respecto a 00:00 UTC. Se IGNORA
+  # con el ancla de sesión de abajo: H4 arranca con la sesión y avanza de cuatro
+  # en cuatro dentro de ella (17/21/01/05/09/13 hora de Nueva York).
+  h4_offset_hours: 0
+  # Inicio de la vela diaria. Dos formas:
+  #   "HH:MM"       -> hora fija en UTC ("00:00", "22:00").
+  #   "PLAZA_HH:MM" -> hora local de una plaza, con horario de verano real
+  #                    ("NY_17:00", "NY_18:00" -> America/New_York). El corte se
+  #                    mueve solo dos veces al año: las 17:00 de Nueva York son
+  #                    las 22:00 UTC en invierno y las 21:00 en verano.
+  d_session_start: "NY_17:00"
+
+# Los nombres de los recuadros que se plantan a mano. Son ETIQUETAS DE DIBUJO:
+# no las lee ningún cálculo, no salen del HTML y no hay ninguna regla detrás. Se
+# declaran aquí —y no en el JavaScript— para que renombrarlas cuando la
+# estrategia tenga vocabulario propio no exija tocar el explorador.
+#
+# Tres como mucho: hay tres colores de mano, elegidos para no confundirse con
+# ninguna capa calculada el día que la haya.
+marks:
+  rects: [Zona 1, Zona 2, Zona 3]
+
+# Verificación empírica de zona horaria. OBLIGATORIA antes de dibujar: un offset
+# horario equivocado no da error, da velas H4 y diarias desplazadas, o sea un
+# gráfico distinto al de la plataforma.
+timezone_audit:
+  enabled: true
+  expected_peak_utc: "13:30"
+  tolerance_minutes: 30
+  weekend_gap_hours: 12.0
+  min_conformity: 0.9
+
+reporting:
+  output_dir: now/explorador
+  # Reloj con el que se escribe la hora al lado de la UTC: el explorador imprime
+  # las dos. `Etc/GMT+4` es el UTC-4 FIJO —el signo va al revés, convención
+  # POSIX—, que es exactamente lo que dibuja cTrader todo el año, así que las
+  # horas del explorador y las de la plataforma de ejecución se leen iguales sin
+  # traducir. Se escribe `UTC-4` en el dibujo, no el identificador.
+  #
+  # Es sólo etiqueta: no entra en ningún cálculo. Ojo, no es el reloj de
+  # TradingView ni el de FXReplay, que sí siguen el horario de verano de Nueva
+  # York y en invierno van una hora por detrás de éste.
+  session_timezone: Etc/GMT+4
+  # Velas embebidas por temporalidad; se conservan las más recientes. 0 = todas.
+  #
+  # TODAS, y es por el REPLAY: la vela en curso se arma con la temporalidad
+  # inmediatamente inferior, así que recortar las finas no quita detalle, quita
+  # el armado entero. Ocho años de M15 son ~190.000 velas y los de M5 ~570.000:
+  # unas decenas de MB de fichero. El explorador sólo dibuja el tramo de la
+  # ventana, así que el coste es de descarga, no de dibujo.
+  max_explorer_bars: 0

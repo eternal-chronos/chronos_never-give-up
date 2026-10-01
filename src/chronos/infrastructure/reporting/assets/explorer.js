@@ -5,15 +5,16 @@
  * razonar que llevar la cuenta de índices de traza.
  *
  * TODAVÍA NO HAY ESTRATEGIA. Lo que se dibuja son las velas de cada
- * temporalidad y su volumen, tal cual los trae el histórico; una sola capa
- * calculada, las SMMA de máximos y de mínimos; y encima lo que el propietario
- * marca a mano: la caja de una entrada simulada y los recuadros. Lo de la mano
- * no sale de aquí ni lo ve ningún motor.
+ * temporalidad —las normales o sus Heikin Ashi, a elegir—; una sola capa
+ * calculada, las SMMA de máximos y de mínimos de esas velas; y encima lo que el
+ * propietario marca a mano: la caja de una entrada simulada y los recuadros. Lo
+ * de la mano no sale de aquí ni lo ve ningún motor.
  *
  * La ventana de fechas recorta los datos en vez de limitarse a mover el eje: los
  * dos ejes se autoescalan al tramo y el dibujo no arrastra ocho años de velas en
- * cada paso. Las marcas de tiempo viajan como minutos desde la época en UTC, así
- * que filtrar por fecha es comparar enteros.
+ * cada paso; y nunca se dibujan más de `DATA.meta.maxCandles` velas a la vez.
+ * Las marcas de tiempo son minutos desde la época en UTC, así que filtrar por
+ * fecha es comparar enteros.
  *
  * TODO LO DE ESTE FICHERO ES DIBUJO. Las capas calculadas llegan ya calculadas
  * en el payload y aquí sólo se elige qué parte se pinta, cada una con su
@@ -38,6 +39,47 @@
   var SESSION_TZ_LABEL = DATA.meta.sessionTimezoneLabel || SESSION_TZ;
   var DAY = 1440;
 
+  /* El payload viaja comprimido: cada serie es el primer valor y, después, la
+   * diferencia con el anterior, en enteros —minutos los tiempos y unidades de la
+   * última cifra los precios—. Se deshace una sola vez, al abrir, y a partir de
+   * aquí todo trabaja con los valores de siempre. `null` es «sin valor» y no
+   * mueve la cuenta. No se calcula nada: es volver a escribir el mismo número. */
+  var PRICE_SCALE = Math.pow(10, DECIMALS);
+
+  function undelta(steps, scale) {
+    var values = new Array(steps.length);
+    var total = 0;
+    for (var i = 0; i < steps.length; i += 1) {
+      if (steps[i] === null) { values[i] = null; continue; }
+      total += steps[i];
+      values[i] = scale === 1 ? total : total / scale;
+    }
+    return values;
+  }
+
+  function decodeCandles(candles) {
+    ["o", "h", "l", "c"].forEach(function (key) {
+      candles[key] = undelta(candles[key], PRICE_SCALE);
+    });
+  }
+
+  function decodeSmma(smma, chart) {
+    if (!smma) { return; }
+    smma.high[chart] = undelta(smma.high[chart], PRICE_SCALE);
+    smma.low[chart] = undelta(smma.low[chart], PRICE_SCALE);
+  }
+
+  DATA.charts.forEach(function (chart) {
+    var b = DATA.bars[chart];
+    b.t = undelta(b.t, 1);
+    decodeCandles(b);
+    decodeSmma(DATA.smma, chart);
+    if (DATA.heikinAshi) {
+      decodeCandles(DATA.heikinAshi.bars[chart]);
+      decodeSmma(DATA.heikinAshi.smma, chart);
+    }
+  });
+
   var PRESETS = [
     { id: "all", label: "Todo", days: null },
     { id: "5y", label: "5 años", days: 1825 },
@@ -55,9 +97,9 @@
     preset: "3m",
     from: null,
     to: null,
-    /* El volumen de cada vela al pie del precio. Nace encendido: es un
-     * indicador que el propietario tiene siempre puesto. */
-    volume: true,
+    /* Qué velas se dibujan: las normales (`standard`) o sus Heikin Ashi
+     * (`heikinAshi`). Las SMMA siguen a las velas, como en TradingView. */
+    candles: "standard",
     /* Las SMMA de máximos y de mínimos. Nacen encendidas: son la capa que se
      * está construyendo. */
     smma: true,
@@ -163,6 +205,15 @@
 
   function bars() { return DATA.bars[state.chart]; }
 
+  /* Las velas que se dibujan: las normales o sus Heikin Ashi, que llegan
+   * calculadas por el motor. Son las mismas velas —mismos tiempos, los de
+   * `bars()`— con otra apertura, otro máximo, otro mínimo y otro cierre. */
+  function heikinAshi() { return state.candles === "heikinAshi" && !!DATA.heikinAshi; }
+
+  function candles() { return heikinAshi() ? DATA.heikinAshi.bars[state.chart] : bars(); }
+
+  function candleName() { return heikinAshi() ? "Heikin Ashi " : ""; }
+
   /* Duración de la vela de cada temporalidad, en minutos. Viene medida sobre las
    * velas desde Python: con ancla de sesión el diario no dura siempre lo mismo y
    * deducirla del nombre mentiría. */
@@ -171,6 +222,12 @@
   /* El reloj del replay: el minuto en que cerró la última vela del gráfico. Todo
    * lo posterior a esta marca es futuro y no se dibuja. */
   function now_() { return bars().t[state.cursor] + span(state.chart); }
+
+  /* Velas que se dibujan como mucho a la vez. Plotly pinta cada vela como un
+   * trazo SVG y con decenas de miles el gráfico se arrastra en cada gesto; a
+   * este ancho, además, ya no caben a un píxel cada una. Una ventana con más se
+   * queda con las MÁS RECIENTES —el borde derecho manda— y el estado lo dice. */
+  var MAX_CANDLES = DATA.meta.maxCandles || 2500;
 
   function bounds() {
     var t = bars().t;
@@ -184,10 +241,15 @@
       if (state.zoom.x) {
         start = Math.min(start, Math.max(0, lowerBound(t, state.zoom.x[0]) - 1));
       }
+      // Pero sin pasar del tope: alejar el zoom no puede volver a pintar miles.
+      var floor = state.cursor + 1 - MAX_CANDLES;
+      var capped = start < floor ? state.cursor + 1 - start : 0;
+      start = Math.max(start, floor);
       var edge = now_();
       return {
         from: dayOf(t[start]), to: dayOf(edge), first: first, last: last,
-        lo: t[start], hi: edge, cut: { start: start, end: state.cursor + 1 }
+        lo: t[start], hi: edge, cut: { start: start, end: state.cursor + 1 },
+        capped: capped
       };
     }
     if (state.from || state.to) {
@@ -199,11 +261,24 @@
     return range_(from < first ? first : from, last, first, last);
   }
 
+  /* El tramo de fechas pedido. Si trae más velas que el tope, empieza en la
+   * primera de las `MAX_CANDLES` últimas y `from` lo dice: el campo de fecha y
+   * la navegación ◀ ▶ trabajan con lo que de verdad se dibuja. `capped` guarda
+   * cuántas traía, para el estado. */
   function range_(from, to, first, last) {
-    return {
+    var range = {
       from: from, to: to, first: first, last: last,
-      lo: dayStart(from), hi: dayEnd(to)
+      lo: dayStart(from), hi: dayEnd(to), capped: 0
     };
+    var t = bars().t;
+    var start = lowerBound(t, range.lo);
+    var end = lowerBound(t, range.hi + 1);
+    if (end - start > MAX_CANDLES) {
+      range.capped = end - start;
+      range.lo = t[end - MAX_CANDLES];
+      range.from = dayOf(range.lo);
+    }
+    return range;
   }
 
   /* Los bordes de la ventana en minutos. Con `knownUntil`, `pending` y `clip`
@@ -259,13 +334,15 @@
 
   function priceTraces(cut) {
     var b = bars();
+    var k = candles();
     var x = b.t.slice(cut.start, cut.end).map(iso);
-    var open = b.o.slice(cut.start, cut.end);
-    var high = b.h.slice(cut.start, cut.end);
-    var low = b.l.slice(cut.start, cut.end);
-    var close = b.c.slice(cut.start, cut.end);
+    var open = k.o.slice(cut.start, cut.end);
+    var high = k.h.slice(cut.start, cut.end);
+    var low = k.l.slice(cut.start, cut.end);
+    var close = k.c.slice(cut.start, cut.end);
+    var kind = heikinAshi() ? "HEIKIN ASHI<br>" : "";
     var text = b.t.slice(cut.start, cut.end).map(function (minute, i) {
-      return stamp(minute) + "<br>O " + price(open[i]) + " · H " + price(high[i]) +
+      return kind + stamp(minute) + "<br>O " + price(open[i]) + " · H " + price(high[i]) +
         "<br>L " + price(low[i]) + " · C " + price(close[i]) +
         "<br>cuerpo [" + price(Math.min(open[i], close[i])) + ", " +
         price(Math.max(open[i], close[i])) + "]";
@@ -276,13 +353,13 @@
     if (state.view === "line") {
       if (half) { x = x.concat([iso(half.x)]); close = close.concat([half.c]); }
       return [{
-        type: "scatter", mode: "lines", name: "Cierres " + label(state.chart),
+        type: "scatter", mode: "lines", name: "Cierres " + candleName() + label(state.chart),
         x: x, y: close, line: { color: COLORS.ink, width: 1.2 },
         text: text, hoverinfo: "text", hoverlabel: { align: "left" }
       }];
     }
     var traces = [{
-      type: "candlestick", name: "Velas " + label(state.chart),
+      type: "candlestick", name: "Velas " + candleName() + label(state.chart),
       x: x, open: open, high: high, low: low, close: close,
       increasing: { line: { color: COLORS.bullish, width: 1 }, fillcolor: COLORS.bullish },
       decreasing: { line: { color: COLORS.bearish, width: 1 }, fillcolor: COLORS.bearish },
@@ -379,24 +456,42 @@
     // El recuento que se enseña es el de los PASOS, que es lo que el propietario
     // controla con ▶▶; el dibujo va más fino cuando el reloj lo permite.
     var steps = formingRange();
-    return {
+    var half = {
       x: start, o: fine.o[from], h: high, l: low, c: fine.c[end - 1],
       done: state.sub, total: steps ? steps.to - steps.from : 0,
       timeframe: steps ? steps.timeframe : timeframe,
       until: fine.t[end - 1] + span(timeframe)
     };
+    return heikinAshi() ? heikinAshiForming(half) : half;
+  }
+
+  /* La misma vela a medio hacer, en Heikin Ashi: su cierre es la media de lo
+   * que lleva —apertura, máximo, mínimo y último precio— y su apertura, la media
+   * de la apertura y el cierre HA de la última vela CERRADA, que sí llegan
+   * calculados del motor. Es la fórmula del dominio (`heikin_ashi`) sobre una
+   * vela que ninguna regla ha visto todavía; al cerrar, se dibuja la del motor. */
+  function heikinAshiForming(half) {
+    var previous = DATA.heikinAshi.bars[state.chart];
+    var close = (half.o + half.h + half.l + half.c) / 4;
+    var open = (previous.o[state.cursor] + previous.c[state.cursor]) / 2;
+    half.h = Math.max(half.h, open, close);
+    half.l = Math.min(half.l, open, close);
+    half.o = open;
+    half.c = close;
+    return half;
   }
 
   function formingTrace(half) {
     var rising = half.c >= half.o;
     var colour = rising ? COLORS.bullish : COLORS.bearish;
     return {
-      type: "candlestick", name: "Vela en formación",
+      type: "candlestick", name: "Vela en formación" + (heikinAshi() ? " Heikin Ashi" : ""),
       x: [iso(half.x)], open: [half.o], high: [half.h], low: [half.l], close: [half.c],
       increasing: { line: { color: colour, width: 1.4 }, fillcolor: "rgba(0,0,0,0)" },
       decreasing: { line: { color: colour, width: 1.4 }, fillcolor: "rgba(0,0,0,0)" },
       opacity: 0.85,
-      text: ["VELA EN FORMACIÓN · el motor aún no la ha visto cerrar<br>" +
+      text: ["VELA EN FORMACIÓN" + (heikinAshi() ? " (HEIKIN ASHI)" : "") +
+        " · el motor aún no la ha visto cerrar<br>" +
         stamp(half.x) + " → " + label(state.chart) +
         "<br>" + half.done + " de " + half.total + " velas de " + label(half.timeframe) +
         " · precio hasta " + iso(half.until).slice(0, 16) + " UTC" +
@@ -404,84 +499,6 @@
         "<br>L " + price(half.l) + " · C " + price(half.c)],
       hoverinfo: "text", hoverlabel: { align: "left" }
     };
-  }
-
-  /* --- El volumen, al pie del precio -----------------------------------------
-   *
-   * Una barra por vela con el volumen que trae el histórico (`v`), como el
-   * indicador de volumen de la plataforma del propietario: al pie del panel del
-   * precio, en su propio eje y sin escala a la vista. Sólo en las últimas
-   * `DATA.meta.volumeBars` velas hasta el borde derecho —en replay, hasta el
-   * reloj—: el volumen de muchas velas atrás no se mira. El eje se estira hasta
-   * VOLUME_HEADROOM veces la barra más alta de la ventana, así que las barras
-   * ocupan la franja de abajo y no tapan las velas. Verde si la vela cierra por
-   * encima de su apertura, rojo si no: el color de la vela, no una lectura.
-   *
-   * Es el dato tal cual: no se calcula nada. Se recorta por el mismo sitio que
-   * las velas, así que el replay no lo adelanta.
-   */
-  var VOLUME_HEADROOM = 5;
-
-  function hasVolume() {
-    var b = bars();
-    return !!(b && b.v && b.v.length);
-  }
-
-  /* En auditoría ciega el gráfico va pelado: sólo las velas. */
-  function volumeOn() { return state.volume && hasVolume() && !blindfolded(); }
-
-  function volumeBars() { return DATA.meta.volumeBars || 40; }
-
-  /* El tramo del corte que lleva barra: las últimas velas a la vista. */
-  function volumeCut(cut) {
-    return { start: Math.max(cut.start, cut.end - volumeBars()), end: cut.end };
-  }
-
-  function volumeTraces(cut) {
-    if (!volumeOn()) { return []; }
-    cut = volumeCut(cut);
-    var b = bars();
-    var volume = b.v.slice(cut.start, cut.end);
-    if (!volume.length) { return []; }
-    var open = b.o.slice(cut.start, cut.end);
-    var close = b.c.slice(cut.start, cut.end);
-    return [{
-      type: "bar", name: "Volumen " + label(state.chart), yaxis: "y3",
-      x: b.t.slice(cut.start, cut.end).map(iso), y: volume,
-      marker: {
-        color: volume.map(function (value, i) {
-          return rgba(close[i] >= open[i] ? COLORS.bullish : COLORS.bearish, 0.35);
-        })
-      },
-      text: volume.map(function (value, i) {
-        return stamp(b.t[cut.start + i]) + "<br>volumen " + value.toFixed(DECIMALS) +
-          "<br>ES DIBUJO: el volumen del histórico, sin tocar";
-      }),
-      hoverinfo: "text", hoverlabel: { align: "left" }
-    }];
-  }
-
-  /* El eje del volumen se superpone al del precio y no se ve: lo que cuenta es
-   * la altura relativa de las barras, no el número del eje. */
-  function volumeAxis(cut) {
-    cut = volumeCut(cut);
-    var b = bars();
-    var top = 0;
-    for (var i = cut.start; i < cut.end; i += 1) { if (b.v[i] > top) { top = b.v[i]; } }
-    return {
-      overlaying: "y", side: "right", visible: false, fixedrange: true,
-      showgrid: false, zeroline: false,
-      range: [0, (top > 0 ? top : 1) * VOLUME_HEADROOM]
-    };
-  }
-
-  function volumeNote() {
-    if (blindfolded() || !hasVolume()) { return null; }
-    if (!state.volume) { return "volumen apagado"; }
-    return "al pie del precio, el VOLUMEN de las últimas " + volumeBars() + " velas de " +
-      label(state.chart) +
-      " tal cual lo trae el histórico (el de ticks, sumado al agregar) —verde si la " +
-      "vela cierra arriba, rojo si abajo—: es el dato, no decide nada";
   }
 
   /* El color de la paleta llega como `#rrggbb`; el relleno necesita alfa. */
@@ -501,32 +518,39 @@
    * (naranja). Llegan hechas en el payload —las calcula el dominio, en el punto
    * de composición— y aquí sólo se elige qué tramo se pinta.
    *
+   * Hay una pareja por tipo de vela y se dibuja la de las velas que se miran:
+   * sobre Heikin Ashi, la media es la de los máximos y mínimos HA, como hace
+   * TradingView sobre un gráfico Heikin Ashi.
+   *
    * Cada valor es el de una vela CERRADA y va en la etiqueta de esa vela, como
    * la propia vela. Se recortan por el mismo sitio que las velas y, en el
    * replay, además por el reloj (`pending`): la vela en formación todavía no ha
    * cerrado y ninguna de las dos medias la ha leído. Donde no hay valor —las
    * primeras velas del histórico, mientras la media se llena— la línea se corta.
    */
-  var SMMA = DATA.smma || null;
-
   var SMMA_SIDES = [
     { key: "high", name: "máximos", color: COLORS.smmaHigh },
     { key: "low", name: "mínimos", color: COLORS.smmaLow }
   ];
 
-  function hasSmma() {
-    return !!(SMMA && SMMA.high[state.chart] && SMMA.low[state.chart]);
+  /* Las SMMA de las velas que se están mirando. */
+  function smmaSet() {
+    var set = heikinAshi() ? DATA.heikinAshi.smma : DATA.smma;
+    return set && set.high[state.chart] && set.low[state.chart] ? set : null;
   }
+
+  function hasSmma() { return !!smmaSet(); }
 
   /* En auditoría ciega el gráfico va pelado: sólo las velas. */
   function smmaOn() { return state.smma && hasSmma() && !blindfolded(); }
 
   function smmaName(side) {
-    return "SMMA " + SMMA.period + " " + side.name + " " + label(state.chart);
+    return "SMMA " + smmaSet().period + " " + side.name + " " + candleName() + label(state.chart);
   }
 
   function smmaTraces(cut, edges) {
     if (!smmaOn()) { return []; }
+    var set = smmaSet();
     var b = bars();
     // Sólo las velas que ya habían cerrado al reloj. Como los tiempos van en
     // orden, lo que queda es un prefijo del corte y los valores se toman por el
@@ -537,19 +561,17 @@
     if (!times.length) { return []; }
     var x = times.map(iso);
     return SMMA_SIDES.map(function (side) {
-      var values = SMMA[side.key][state.chart].slice(cut.start, cut.start + times.length);
       return {
         type: "scatter", mode: "lines", name: smmaName(side),
-        x: x, y: values, connectgaps: false,
+        x: x, y: set[side.key][state.chart].slice(cut.start, cut.start + times.length),
+        connectgaps: false,
         line: { color: side.color, width: 1.4 },
-        text: values.map(function (value, i) {
-          return smmaName(side) + "<br>" + stamp(times[i]) + "<br>" +
-            (value === null
-              ? "sin valor: todavía no hay " + SMMA.period + " velas"
-              : price(value)) +
-            "<br>media suavizada de los " + side.name + " de velas CERRADAS";
-        }),
-        hoverinfo: "text", hoverlabel: { align: "left" }
+        // Plantilla en vez de un texto por punto: así no se montan miles de
+        // cadenas en cada dibujo.
+        hovertemplate: smmaName(side) + "<br>%{x|%Y-%m-%d %H:%M} UTC<br>%{y:." +
+          DECIMALS + "f}<br>media suavizada de los " + side.name +
+          " de velas CERRADAS<extra></extra>",
+        hoverlabel: { align: "left" }
       };
     });
   }
@@ -557,10 +579,21 @@
   function smmaNote() {
     if (blindfolded() || !hasSmma()) { return null; }
     if (!state.smma) { return "SMMA apagadas"; }
-    return "SMMA " + SMMA.period + " de los MÁXIMOS (azul) y de los MÍNIMOS (naranja) de " +
-      label(state.chart) + ": media suavizada (alfa 1/" + SMMA.period + ") de las velas " +
+    var period = smmaSet().period;
+    return "SMMA " + period + " de los MÁXIMOS (azul) y de los MÍNIMOS (naranja) de " +
+      (heikinAshi() ? "las velas Heikin Ashi de " : "") + label(state.chart) +
+      ": media suavizada (alfa 1/" + period + ") de las velas " +
       "CERRADAS" + (state.replay ? ", sin la vela en formación" : "") +
       "; es la única capa calculada y no decide nada";
+  }
+
+  /* Qué velas se ven. Las Heikin Ashi no son las del mercado: hay que decirlo,
+   * o una vela HA se lee como el precio que hubo. */
+  function candlesNote() {
+    if (!heikinAshi()) { return null; }
+    return "velas HEIKIN ASHI calculadas por el motor sobre las normales —cierre = media " +
+      "de O/H/L/C, apertura = media de la apertura y el cierre HA anteriores—: NO son " +
+      "los precios que hubo";
   }
 
   // --- Encuadre manual -------------------------------------------------
@@ -966,12 +999,13 @@
     if (pair) { return pair; }
     var cut = slice(bounds());
     var b = bars();
+    var k = candles();
     if (cut.end <= cut.start) { return null; }
     if (key === "x") { return [b.t[cut.start], b.t[cut.end - 1] + span(state.chart)]; }
     var lo = Infinity, hi = -Infinity;
     for (var i = cut.start; i < cut.end; i += 1) {
-      if (b.l[i] < lo) { lo = b.l[i]; }
-      if (b.h[i] > hi) { hi = b.h[i]; }
+      if (k.l[i] < lo) { lo = k.l[i]; }
+      if (k.h[i] > hi) { hi = k.h[i]; }
     }
     return hi > lo ? [lo, hi] : null;
   }
@@ -2017,14 +2051,11 @@
     if (state.replay && state.zoom.x) { state.zoom.x = followX(state.zoom.x, now_()); }
     var range = bounds();
     var cut = slice(range);
-    // Las SMMA van sobre el precio; el volumen, en su eje superpuesto. Una capa
-    // calculada nueva se concatena aquí, con su propia casilla.
-    var traces = priceTraces(cut)
-      .concat(smmaTraces(cut, window_(range)))
-      .concat(volumeTraces(cut));
+    // Las SMMA van sobre el precio. Una capa calculada nueva se concatena aquí,
+    // con su propia casilla.
+    var traces = priceTraces(cut).concat(smmaTraces(cut, window_(range)));
 
     var figure = layout(range);
-    if (volumeOn()) { figure.yaxis3 = volumeAxis(cut); }
     Plotly.react("chart", traces, figure, {
       responsive: true, scrollZoom: true, displaylogo: false,
       // Sin herramientas de dibujo: en auditoría ciega no se puede marcar el
@@ -2087,13 +2118,20 @@
     // hay se lee como que ahí no pasó nada.
     text += hasSmma()
       ? " · SIN ESTRATEGIA: la única capa calculada son las SMMA y no deciden nada; " +
-        "lo que se vea además de las velas, el volumen y las SMMA lo pone tu mano"
+        "lo que se vea además de las velas y las SMMA lo pone tu mano"
       : " · SIN ESTRATEGIA: encima del precio no hay ninguna capa calculada; " +
-        "lo que se vea además de las velas y el volumen lo pone tu mano";
+        "lo que se vea además de las velas lo pone tu mano";
+    var velas = candlesNote();
+    if (velas) { text += " · " + velas; }
     var medias = smmaNote();
     if (medias) { text += " · " + medias; }
-    var volumen = volumeNote();
-    if (volumen) { text += " · " + volumen; }
+    if (range.capped) {
+      // Una ventana recortada sin decirlo se lee como que ahí empieza el histórico.
+      text += " · TOPE DE DIBUJO: la ventana tiene " + range.capped.toLocaleString("es-ES") +
+        " velas de " + label(state.chart) + " y se dibujan las " +
+        MAX_CANDLES.toLocaleString("es-ES") + " últimas, desde " + stamp(b.t[cut.start]) +
+        "; con más, el gráfico se arrastra. Acorta el periodo o sube de temporalidad";
+    }
     if (!visible) {
       // Un gráfico vacío no puede quedarse callado: o el mercado estaba cerrado,
       // o las velas de esta temporalidad no llegan hasta aquí, y son dos cosas
@@ -2325,6 +2363,34 @@
     });
   }
 
+  /* Normales o Heikin Ashi. Cambiar de vela no mueve nada más: ni la ventana,
+   * ni el zoom, ni el reloj del replay. Es otra forma de dibujar las mismas
+   * velas, y las SMMA van con ellas. */
+  var CANDLE_TYPES = [
+    { id: "standard", label: "Normales", title: "Las velas del histórico, tal cual." },
+    {
+      id: "heikinAshi", label: "Heikin Ashi",
+      title: "Velas Heikin Ashi calculadas por el motor sobre las normales. Las SMMA\n" +
+        "pasan a ser las de los máximos y mínimos HA, como en TradingView."
+    }
+  ];
+
+  function buildCandleButtons() {
+    var container = document.getElementById("candle-buttons");
+    CANDLE_TYPES.forEach(function (type) {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.textContent = type.label;
+      button.dataset.candles = type.id;
+      button.title = type.title;
+      button.addEventListener("click", function () {
+        state.candles = type.id;
+        draw();
+      });
+      container.appendChild(button);
+    });
+  }
+
   function buildPresetButtons() {
     var container = document.getElementById("preset-buttons");
     PRESETS.forEach(function (preset) {
@@ -2409,7 +2475,11 @@
     document.getElementById("rect-undo").disabled = !state.rects.length;
     document.getElementById("rect-clear").disabled = !state.rects.length;
 
-    document.getElementById("layer-volume").checked = state.volume;
+    document.querySelectorAll("#candle-buttons button").forEach(function (button) {
+      button.setAttribute("aria-pressed", String(button.dataset.candles === state.candles));
+      // Sin velas Heikin Ashi en el payload no hay nada que elegir.
+      button.disabled = button.dataset.candles === "heikinAshi" && !DATA.heikinAshi;
+    });
     document.getElementById("layer-smma").checked = state.smma;
     syncAccount();
     seedInput().value = state.seed === null ? "" : String(state.seed);
@@ -2464,10 +2534,6 @@
         dropZoom();
         draw();
       });
-    });
-    document.getElementById("layer-volume").addEventListener("change", function (event) {
-      state.volume = event.target.checked;
-      draw();
     });
     document.getElementById("layer-smma").addEventListener("change", function (event) {
       state.smma = event.target.checked;
@@ -2565,6 +2631,7 @@
   }
 
   buildChartButtons();
+  buildCandleButtons();
   buildPresetButtons();
   buildSimButtons();
   buildRectButtons();

@@ -17,9 +17,11 @@ el explorador para mirarlo y marcar encima a mano, y el motor de backtest con su
 contrato de estrategia (`ema_cross` es sólo la referencia del contrato).
 
 Lo primero que se escriba será una estrategia. Hasta entonces, la única capa
-calculada encima del precio son las dos SMMA 5 (máximos y mínimos) del setup 1,
-que se calculan en `interface/chart_cli.py` y se le pasan hechas al explorador;
-cualquier otra cosa la ha puesto una mano, y el explorador lo dice.
+calculada encima del precio son las dos SMMA 5 (máximos y mínimos) del setup 1.
+El setup 1 corre sobre velas Heikin Ashi: el explorador enseña normales o HA y
+las SMMA siguen a las velas que se miran. Velas HA y SMMA se calculan en
+`interface/chart_cli.py` y se le pasan hechas al explorador; cualquier otra cosa
+la ha puesto una mano, y el explorador lo dice.
 
 ## Capas
 
@@ -93,7 +95,7 @@ terminada. No hay entrega sin dibujo.
   reloj (`knownUntil`, `pending`, `clip` en `explorer.js`), no sólo por la ventana.
 - Todo lo que se dibuja se prueba: paso en `tests/infrastructure/explorer_dom_stub.js`
   y test en `tests/infrastructure/test_explorer.py`. Hay un test que exige que
-  **ninguna traza sea otra cosa que velas, volumen y las SMMA**
+  **ninguna traza sea otra cosa que velas y las SMMA**
   (`test_no_se_dibuja_mas_capa_calculada_que_las_smma`): al añadir otra capa
   calculada hay que actualizarlo a propósito, no borrarlo.
 

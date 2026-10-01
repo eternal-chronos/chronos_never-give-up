@@ -57,7 +57,7 @@ function declare(id) {
 // Elementos que la plantilla HTML declara de verdad.
 ['tf-buttons', 'view-buttons', 'preset-buttons', 'chart', 'zoom-reset',
  'prev', 'next', 'from', 'to',
- 'volume-layer', 'layer-volume', 'smma-layer', 'layer-smma',
+ 'candle-buttons', 'smma-layer', 'layer-smma',
  'blind-seed', 'blind-start', 'blind-reveal', 'blind-exit',
  'sim-group', 'sim-buttons', 'sim-ratio', 'sim-clear',
  'rect-group', 'rect-buttons', 'rect-undo', 'rect-clear',
@@ -105,6 +105,7 @@ global.document = {
   querySelectorAll(selector) {
     if (selector === '#tf-buttons button') { return elements['tf-buttons'].children; }
     if (selector === '#preset-buttons button') { return elements['preset-buttons'].children; }
+    if (selector === '#candle-buttons button') { return elements['candle-buttons'].children; }
     if (selector === '#sim-buttons button') { return elements['sim-buttons'].children; }
     if (selector === '#sim-ratio button') { return elements['sim-ratio'].children; }
     if (selector === '#rect-buttons button') { return elements['rect-buttons'].children; }
@@ -133,10 +134,28 @@ function engineLayer(name) {
   return !/^(Velas |Cierres |Vela en formación)/.test(name || '');
 }
 
-/* Lo que es precio o el volumen del histórico. Todo lo demás es una capa
- * calculada: hoy sólo pueden serlo las SMMA, y el test lo comprueba por nombre. */
+/* Lo que es precio: las velas, normales o Heikin Ashi. Todo lo demás es una
+ * capa calculada: hoy sólo pueden serlo las SMMA, y el test lo comprueba por nombre. */
 function priceLayer(name) {
-  return /^(Velas |Cierres |Vela en formación|Volumen )/.test(name || '');
+  return /^(Velas |Cierres |Vela en formación)/.test(name || '');
+}
+
+/* Apertura, máximo, mínimo y cierre de la vela `index` de una traza de velas. */
+function candleAt(trace, index) {
+  if (!trace || !trace.open || !trace.open.length) { return null; }
+  const i = index < 0 ? trace.open.length + index : index;
+  return { o: trace.open[i], h: trace.high[i], l: trace.low[i], c: trace.close[i] };
+}
+
+/* El payload viaja como diferencias enteras; lo mismo que hace el explorador al
+ * abrir, para que el recorrido pueda leer tiempos de verdad. */
+function undelta(steps) {
+  let total = 0;
+  return steps.map(function (step) {
+    if (step === null) { return null; }
+    total += step;
+    return total;
+  });
 }
 
 function simShape(shape) {
@@ -225,14 +244,12 @@ global.Plotly = {
       }),
       yTickFormat: layout.yaxis && layout.yaxis.tickformat,
       xAnchor: (layout.xaxis && layout.xaxis.anchor) || null,
-      // El volumen va en su propio eje, superpuesto al del precio y sin verse.
-      volumeAxis: layout.yaxis3
-        ? {
-          overlaying: layout.yaxis3.overlaying,
-          visible: layout.yaxis3.visible,
-          range: layout.yaxis3.range,
-        }
-        : null,
+      // La última vela dibujada y la vela en formación, con sus cuatro precios:
+      // es lo que permite comprobar que se pintan las Heikin Ashi del motor.
+      lastCandle: candleAt(traces[0], -1),
+      forming: candleAt(traces.filter(function (trace) {
+        return /^Vela en formación/.test(trace.name || '');
+      })[0], 0),
       xRange: (layout.xaxis && layout.xaxis.range) || null,
       yRange: (layout.yaxis && layout.yaxis.range) || null,
     });
@@ -258,7 +275,7 @@ function snapshot(label) {
     replayPlay: elements['replay-play'].textContent,
     lastRelayout: relayoutCalls[relayoutCalls.length - 1] || null,
     replayLocked: elements['from'].disabled === true && elements['next'].disabled === true,
-    volumeBox: elements['layer-volume'].checked === true,
+    candles: pressed('candle-buttons', 'candles'),
     smmaBox: elements['layer-smma'].checked === true,
     simArmed: pressed('sim-buttons', 'side'),
     simClearDisabled: elements['sim-clear'].disabled === true,
@@ -297,10 +314,16 @@ function tab(timeframe) {
   return tabs.filter(function (item) { return item.dataset.tf === timeframe; })[0] || tabs[0];
 }
 
-/* Fuerza un redibujo sin cambiar nada: la casilla del volumen se vuelve a
+/* Fuerza un redibujo sin cambiar nada: la casilla de las SMMA se vuelve a
  * marcar como ya estaba. */
 function redraw() {
-  elements['layer-volume'].fire('change', { target: { checked: true } });
+  elements['layer-smma'].fire('change', { target: { checked: true } });
+}
+
+function velas(tipo) {
+  elements['candle-buttons'].children.filter(function (button) {
+    return button.dataset.candles === tipo;
+  }).forEach(function (button) { button.fire('click'); });
 }
 
 steps.push(snapshot('de-salida'));
@@ -312,6 +335,11 @@ tabs.forEach(function (item) {
   item.fire('click');
   steps.push(snapshot('grafico-' + item.dataset.tf));
 });
+
+// Una ventana con más velas que el tope dibuja sólo las más recientes y lo dice.
+tab('M5').fire('click');
+presets[0].fire('click');
+steps.push(snapshot('tope-m5-todo'));
 
 // De vuelta al primero: periodo completo, navegación y vista.
 tabs[0].fire('click');
@@ -353,18 +381,22 @@ steps.push(snapshot('lineas'));
 viewButtons[0].fire('click');
 steps.push(snapshot('velas'));
 
-// El volumen al pie del precio: se apaga y se enciende sobre las mismas velas.
-tab('H1').fire('click');
-steps.push(snapshot('volumen-por-defecto'));
-elements['layer-volume'].fire('change', { target: { checked: false } });
-steps.push(snapshot('volumen-apagado'));
-elements['layer-volume'].fire('change', { target: { checked: true } });
-
 // Las SMMA sobre el precio: se apagan y se encienden sobre las mismas velas.
+tab('H1').fire('click');
 steps.push(snapshot('smma-por-defecto'));
 elements['layer-smma'].fire('change', { target: { checked: false } });
 steps.push(snapshot('smma-apagadas'));
 elements['layer-smma'].fire('change', { target: { checked: true } });
+
+// Velas Heikin Ashi: las mismas velas con otros precios, y las SMMA van con
+// ellas. Volver a las normales deja el gráfico como estaba.
+velas('heikinAshi');
+steps.push(snapshot('heikin-ashi'));
+viewButtons[1].fire('click');
+steps.push(snapshot('heikin-ashi-lineas'));
+viewButtons[0].fire('click');
+velas('standard');
+steps.push(snapshot('velas-normales'));
 tabs[0].fire('click');
 presets[presets.length - 1].fire('click');
 steps.push(snapshot('antes-de-la-ciega'));
@@ -387,7 +419,7 @@ steps.push(snapshot('fuera-de-la-ciega'));
 // temporalidad inferior y sin dibujar nada que no se supiera aún.
 const h4 = tab('H4');
 h4.fire('click');
-const serie = payload.bars[h4.dataset.tf].t;
+const serie = undelta(payload.bars[h4.dataset.tf].t);
 const arranque = new Date(serie[Math.floor(serie.length / 2)] * 60000)
   .toISOString().slice(0, 10);
 elements['replay-date'].value = arranque;
@@ -452,6 +484,18 @@ h1.fire('click');
 steps.push(snapshot('reloj-fino-de-vuelta'));
 elements['replay-exit'].fire('click');
 h4.fire('click');
+
+// La vela en formación en Heikin Ashi: la misma vela a medio hacer, llevada a HA
+// con la HA de la última vela cerrada. Cambiar de vela no mueve el reloj.
+elements['replay-date'].value = arranque;
+elements['replay-start'].fire('click');
+elements['replay-forming'].fire('change', { target: { checked: true } });
+for (let paso = 0; paso < 2; paso += 1) { elements['replay-step'].fire('click'); }
+steps.push(snapshot('replay-ha-normales'));
+velas('heikinAshi');
+steps.push(snapshot('replay-ha'));
+velas('standard');
+elements['replay-exit'].fire('click');
 
 // El encuadre hecho a mano tiene que sobrevivir a los pasos: el zoom no se rehace
 // en cada dibujo y la ventana sólo se desplaza para seguir al presente.

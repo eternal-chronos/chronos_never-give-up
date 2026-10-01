@@ -80,6 +80,8 @@ Se ignoran mientras el foco está en un campo de texto.">Temporalidad</span>
           <button type="button" data-view="candles">Velas</button>
           <button type="button" data-view="line">Líneas (cierres)</button>
         </div>
+        <div class="buttons" id="candle-buttons" title="Qué velas se dibujan: las normales o sus
+Heikin Ashi, calculadas por el motor. Las SMMA van con ellas."></div>
         <div class="buttons">
           <button type="button" id="zoom-reset" title="Suelta el zoom hecho a mano y vuelve al
 encuadre automático. También con doble clic sobre el gráfico.">Ajustar</button>
@@ -107,19 +109,12 @@ encuadre automático. También con doble clic sobre el gráfico.">Ajustar</butto
     <div class="group">
       <span>Capas</span>
       <div style="display:flex; gap:16px; flex-wrap:wrap;">
-        <span id="volume-layer">
-          <label class="toggle" title="El VOLUMEN de cada vela, al pie del panel del precio y en su
-propio eje, como el indicador de volumen de la plataforma: verde si la vela cierra por encima
-de su apertura, rojo si no. Sólo en las ÚLTIMAS 40 velas hasta el borde derecho (en replay,
-hasta el reloj). Es el dato del histórico tal cual (en Dukascopy, el volumen de
-ticks sumado al agregar). ES DIBUJO: no decide nada.">
-            <input type="checkbox" id="layer-volume" checked> Volumen</label>
-        </span>
         <span id="smma-layer">
           <label class="toggle" title="Las dos SMMA (media móvil suavizada, alfa = 1/longitud):
-la AZUL sobre los MÁXIMOS de cada vela y la NARANJA sobre los MÍNIMOS. La longitud va en el
-nombre de cada línea. Cada valor es el de una vela CERRADA: en el replay no leen la vela en
-formación. Es la única capa calculada y no decide nada: todavía no hay reglas.">
+la AZUL sobre los MÁXIMOS de cada vela y la NARANJA sobre los MÍNIMOS, de las velas que se
+estén mirando (normales o Heikin Ashi). La longitud va en el nombre de cada línea. Cada valor
+es el de una vela CERRADA: en el replay no leen la vela en formación. Es la única capa
+calculada y no decide nada: todavía no hay reglas.">
             <input type="checkbox" id="layer-smma" checked> SMMA máx./mín.</label>
         </span>
       </div>
@@ -274,16 +269,18 @@ pelada: sólo las velas. Marca lo que veas y pulsa Revelar.">Auditoría ciega</s
     <span><i style="background:#1baf7a"></i>vela alcista</span>
     <span><i style="background:#d03b3b"></i>vela bajista</span>
     <span><b>SIN ESTRATEGIA</b>: la única capa calculada encima del precio son las SMMA, y no
-      deciden nada. Todo lo que se vea además de las velas, el volumen y las SMMA lo ha
-      puesto una mano —la caja simulada y los recuadros— y el estado de abajo lo dice</span>
+      deciden nada. Todo lo que se vea además de las velas y las SMMA lo ha puesto una mano
+      —la caja simulada y los recuadros— y el estado de abajo lo dice</span>
     <span><i style="background:#2a78d6"></i><i style="background:#eb6834"></i><b>SMMA</b>
       de los MÁXIMOS (azul) y de los MÍNIMOS (naranja): media móvil suavizada de cada vela
-      CERRADA, con la longitud en el nombre de la línea. En el replay no leen la vela en
-      formación</span>
-    <span><i class="box" style="background:#1baf7a; opacity:.35"></i>
-      <i class="box" style="background:#d03b3b; opacity:.35"></i><b>VOLUMEN</b> al pie del
-      precio, en las últimas 40 velas: verde si la vela cierra arriba, rojo si abajo. Es el
-      dato del histórico, sin tocar</span>
+      CERRADA de las velas que se miran, con la longitud en el nombre de la línea. En el
+      replay no leen la vela en formación</span>
+    <span><b>Heikin Ashi</b> («Vista»): velas calculadas por el motor sobre las normales
+      —cierre = media de O/H/L/C, apertura = media de la apertura y el cierre HA
+      anteriores—. No son los precios que hubo; las SMMA pasan a ser las de sus máximos y
+      mínimos</span>
+    <span>como mucho se dibujan las 2.500 velas más recientes de la ventana: con más, el
+      gráfico se arrastra. El estado avisa cuando una ventana se ha recortado</span>
     <span>vela hueca a la derecha = vela en formación durante el replay: todavía no ha
       cerrado</span>
     <span>arrastrando sobre el EJE DE PRECIOS se comprime o se estira la vertical, y

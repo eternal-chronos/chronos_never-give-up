@@ -6,19 +6,22 @@ el gráfico del proyecto al lado de las capturas de la plataforma del propietari
 y poder marcar encima.
 
 **No dibuja ninguna estrategia porque todavía no hay ninguna.** Lo que sale del
-payload son las velas de cada temporalidad, su volumen tal cual lo trae el
-histórico, los nombres con los que el propietario marca a mano y una única capa
-calculada: las dos SMMA —de los máximos y de los mínimos— del setup 1. Llegan
-YA CALCULADAS desde el punto de composición (`SmmaLayer`): este módulo no
-importa ningún indicador, sólo las serializa alineadas con las velas. Se dibujan
-en el JavaScript con su propia casilla, su entrada en la leyenda y su texto de
-estado; todo lo demás que haya encima del precio lo ha puesto una mano.
+payload son las velas de cada temporalidad —las normales y, si se pasan, sus
+Heikin Ashi—, los nombres con los que el propietario marca a mano y una única
+capa calculada: las dos SMMA —de los máximos y de los mínimos— del setup 1, una
+pareja por tipo de vela. Velas Heikin Ashi y SMMA llegan YA CALCULADAS desde el
+punto de composición (`HeikinAshiLayer`, `SmmaLayer`): este módulo no importa
+ningún indicador, sólo las serializa alineadas con las velas. Se dibujan en el
+JavaScript con su propio control, su entrada en la leyenda y su texto de estado;
+todo lo demás que haya encima del precio lo ha puesto una mano.
 
 Del payload sale todo lo que se puede derivar en el navegador: las etiquetas de
-los puntos se componen en JavaScript y las marcas de tiempo viajan como minutos
-desde la época. Con ocho años de M5 —más de medio millón de velas— la
-diferencia entre hacerlo así y mandar el texto ya montado son cientos de
-megabytes.
+los puntos se componen en JavaScript. Y viaja comprimido: cada serie va como
+DIFERENCIAS ENTERAS respecto al valor anterior —minutos para los tiempos,
+unidades de la última cifra del precio para los precios—. Con ocho años de M5
+—más de medio millón de velas— y tres juegos de series por vela, mandar los
+números enteros pasaría de cien megabytes; las diferencias son de cuatro o cinco
+cifras y los minutos de M5, un «5».
 """
 
 from __future__ import annotations
@@ -61,13 +64,19 @@ HAND_COLORS: tuple[str, ...] = (theme.MAGENTA, theme.CYAN, theme.OLIVE)
 SMMA_HIGH_COLOR = theme.SERIES[0]
 SMMA_LOW_COLOR = theme.SERIES[1]
 
-#: El volumen sólo en las últimas velas a la vista: el de muchas velas atrás no
-#: se mira y sólo ensucia.
-VOLUME_BARS = 40
+#: Velas que se dibujan como mucho a la vez. Plotly pinta cada vela como un
+#: trazo SVG y con decenas de miles —tres meses de M5— el gráfico se arrastra en
+#: cada gesto; a 1.200 píxeles de ancho, además, 2.500 velas ya no caben a un
+#: píxel cada una. Una ventana con más se queda con las más recientes y lo dice.
+MAX_DRAWN_CANDLES = 2500
 
 #: Cifras con las que se dibuja el precio. De aquí sale también el pip con el
 #: que se miden las distancias a mano: la última cifra que se enseña.
 DECIMALS = 4
+
+#: Unidades de la última cifra en una unidad de precio: los precios viajan como
+#: enteros de esta escala.
+_PRICE_SCALE = 10**DECIMALS
 
 #: Minuto cero de la escala de tiempos del explorador.
 _EPOCH = pd.Timestamp("1970-01-01", tz="UTC")
@@ -87,12 +96,28 @@ class SmmaLayer:
     low: Mapping[str, np.ndarray]
 
 
+@dataclass(frozen=True, slots=True)
+class HeikinAshiLayer:
+    """Las velas Heikin Ashi de cada temporalidad y sus SMMA, ya calculadas.
+
+    `frames` lleva `open/high/low/close` con exactamente las mismas velas que
+    `ChartRun.frames`. Las SMMA son las de ESTAS velas: como en TradingView, la
+    media se calcula sobre las velas que se están mirando.
+    """
+
+    frames: Mapping[str, pd.DataFrame]
+    smma: SmmaLayer | None = None
+
+
 def render_explorer(
-    run: ChartRun, generated_at: datetime | None = None, smma: SmmaLayer | None = None
+    run: ChartRun,
+    generated_at: datetime | None = None,
+    smma: SmmaLayer | None = None,
+    heikin_ashi: HeikinAshiLayer | None = None,
 ) -> str:
     """Devuelve el HTML completo del explorador."""
     generated_at = generated_at or SystemClock().now()
-    payload = build_payload(run, smma)
+    payload = build_payload(run, smma, heikin_ashi)
     # El JSON viaja dentro de un <script>: escapar `</` evita que un texto
     # cualquiera pueda cerrar la etiqueta antes de tiempo.
     data = json.dumps(payload, separators=(",", ":"), ensure_ascii=False, default=str).replace(
@@ -102,7 +127,7 @@ def render_explorer(
     replacements = {
         "__TITLE__": f"Explorador de velas · {symbol}",
         "__HEADER__": f"{symbol} · explorador de velas · lado {run.history.side}",
-        "__SUBTITLE__": _subtitle(run, smma),
+        "__SUBTITLE__": _subtitle(run, smma, heikin_ashi),
         "__GENERATED__": generated_at.strftime("%Y-%m-%d %H:%M:%S"),
         "__DATA__": data,
         "__PLOTLY__": pyo.get_plotlyjs(),
@@ -114,7 +139,11 @@ def render_explorer(
     return _MARKER.sub(lambda match: replacements.get(match.group(0), match.group(0)), template)
 
 
-def build_payload(run: ChartRun, smma: SmmaLayer | None = None) -> dict[str, Any]:
+def build_payload(
+    run: ChartRun,
+    smma: SmmaLayer | None = None,
+    heikin_ashi: HeikinAshiLayer | None = None,
+) -> dict[str, Any]:
     """Serializa la corrida a la estructura que consume el explorador."""
     config = run.config
     frames = run.frames
@@ -128,10 +157,9 @@ def build_payload(run: ChartRun, smma: SmmaLayer | None = None) -> dict[str, Any
             "sessionTimezoneLabel": session_label(config.reporting.session_timezone),
             "h4OffsetHours": config.aggregation.h4_offset_hours,
             "dSessionStart": config.aggregation.d_session_start,
+            #: También dice la escala de los precios: enteros de 10^-decimals.
             "decimals": DECIMALS,
-            #: Cuántas velas, contando hacia atrás desde el borde derecho,
-            #: llevan su barra de volumen.
-            "volumeBars": VOLUME_BARS,
+            "maxCandles": MAX_DRAWN_CANDLES,
         },
         "colors": {
             "bullish": BULLISH,
@@ -154,8 +182,12 @@ def build_payload(run: ChartRun, smma: SmmaLayer | None = None) -> dict[str, Any
         "labels": {timeframe: TIMEFRAME_LABELS[timeframe] for timeframe in run.timeframes},
         "spans": {timeframe: _span_minutes(frame) for timeframe, frame in frames.items()},
         "bars": {timeframe: _bars_payload(frame, max_bars) for timeframe, frame in frames.items()},
-        #: La única capa calculada, o `None` si no se ha pasado ninguna.
+        #: Las SMMA de las velas normales, o `None` si no se ha pasado ninguna.
         "smma": None if smma is None else _smma_payload(smma, frames, max_bars),
+        #: Las velas Heikin Ashi y sus SMMA, o `None` si no se han pasado.
+        "heikinAshi": (
+            None if heikin_ashi is None else _heikin_ashi_payload(heikin_ashi, frames, max_bars)
+        ),
         "marks": _marks(config.marks),
         #: Temporalidades pedidas que el histórico no daba para construir, con el
         #: motivo. Una pestaña que falta se lee como que no existe: hay que decirlo.
@@ -172,26 +204,39 @@ def _marks(marks: MarksConfig) -> dict[str, list[str]]:
     return {"rects": list(marks.rects)}
 
 
-# --- Velas ------------------------------------------------------------------
+# --- Velas y capas ------------------------------------------------------------
 
 
 def _bars_payload(frame: pd.DataFrame, max_bars: int) -> dict[str, Any]:
     total = len(frame)
-    truncated = 0 < max_bars < total
-    if truncated:
-        frame = frame.iloc[-max_bars:]
-    index = pd.DatetimeIndex(frame.index)
+    frame = frame.iloc[_kept(total, max_bars)]
     return {
-        "truncated": truncated,
+        "truncated": len(frame) < total,
         "total": total,
-        "t": _epoch_minutes(index),
-        "o": _round(frame["open"]),
-        "h": _round(frame["high"]),
-        "l": _round(frame["low"]),
-        "c": _round(frame["close"]),
-        #: El volumen de cada vela, tal cual lo trae el histórico (en Dukascopy,
-        #: el de ticks sumado al agregar). Es el panel de volumen de abajo.
-        "v": _round(frame["volume"]),
+        "t": _minute_steps(pd.DatetimeIndex(frame.index)),
+        **_candles_payload(frame),
+    }
+
+
+def _candles_payload(frame: pd.DataFrame) -> dict[str, list[int | None]]:
+    return {
+        key: _price_steps(frame[column].to_numpy(dtype=float))
+        for key, column in (("o", "open"), ("h", "high"), ("l", "low"), ("c", "close"))
+    }
+
+
+def _heikin_ashi_payload(
+    layer: HeikinAshiLayer, frames: Mapping[str, pd.DataFrame], max_bars: int
+) -> dict[str, Any]:
+    bars: dict[str, Any] = {}
+    for timeframe, frame in frames.items():
+        candles = layer.frames[timeframe]
+        if not candles.index.equals(frame.index):
+            raise ValueError(f"las velas Heikin Ashi de {timeframe} no son las mismas velas")
+        bars[timeframe] = _candles_payload(candles.iloc[_kept(len(candles), max_bars)])
+    return {
+        "bars": bars,
+        "smma": None if layer.smma is None else _smma_payload(layer.smma, frames, max_bars),
     }
 
 
@@ -205,27 +250,50 @@ def _smma_payload(
     }
 
 
-def _layer_values(values: np.ndarray, frame: pd.DataFrame, max_bars: int) -> list[float | None]:
+def _layer_values(values: np.ndarray, frame: pd.DataFrame, max_bars: int) -> list[int | None]:
     """Un valor por vela, recortado por el mismo sitio que las velas.
 
     Se calcula sobre todo el histórico y se recorta después: recortar antes
-    reiniciaría la media en la primera vela embebida. Sin valor viaja `null`
-    —el JSON no tiene `NaN`— y Plotly lo dibuja como hueco.
+    reiniciaría la media en la primera vela embebida.
     """
     if len(values) != len(frame):
         raise ValueError(f"la capa trae {len(values)} valores para {len(frame)} velas")
-    if 0 < max_bars < len(values):
-        values = values[-max_bars:]
-    return [None if np.isnan(value) else round(float(value), DECIMALS) for value in values]
+    return _price_steps(values[_kept(len(values), max_bars)])
 
 
-def _epoch_minutes(index: pd.DatetimeIndex) -> list[int]:
+def _kept(length: int, max_bars: int) -> slice:
+    """Las `max_bars` últimas, que es lo que se conserva de las velas al recortar."""
+    return slice(-max_bars, None) if 0 < max_bars < length else slice(None)
+
+
+def _minute_steps(index: pd.DatetimeIndex) -> list[int | None]:
+    """Minutos desde la época, como diferencias con la vela anterior."""
     utc = index.tz_convert("UTC") if index.tz is not None else index.tz_localize("UTC")
-    return [int(value) for value in ((utc - _EPOCH) // pd.Timedelta(minutes=1)).to_numpy()]
+    minutes = ((utc - _EPOCH) // pd.Timedelta(minutes=1)).to_numpy(dtype=np.int64)
+    return _steps(minutes)
 
 
-def _round(series: pd.Series) -> list[float]:
-    return [round(float(value), DECIMALS) for value in series.to_numpy(dtype=float)]
+def _price_steps(values: np.ndarray) -> list[int | None]:
+    """Precios en unidades de la última cifra, como diferencias con el anterior.
+
+    Donde no hay valor viaja `null` —el JSON no tiene `NaN`— y la diferencia
+    siguiente se cuenta desde el último valor que sí lo tenía.
+    """
+    ticks = np.round(np.asarray(values, dtype=float) * _PRICE_SCALE)
+    valid = ~np.isnan(ticks)
+    steps = _steps(ticks[valid].astype(np.int64))
+    if valid.all():
+        return steps
+    encoded: list[int | None] = [None] * len(ticks)
+    for position, step in zip(np.flatnonzero(valid).tolist(), steps, strict=True):
+        encoded[position] = step
+    return encoded
+
+
+def _steps(values: np.ndarray) -> list[int | None]:
+    """El primero tal cual y, desde ahí, la diferencia con el anterior."""
+    result: list[int | None] = np.diff(values, prepend=0).tolist()
+    return result
 
 
 def _span_minutes(frame: pd.DataFrame) -> int:
@@ -249,7 +317,7 @@ def _bar_span(index: pd.DatetimeIndex) -> pd.Timedelta:
     return pd.Timedelta(deltas.mode().iloc[0]) if not deltas.empty else pd.Timedelta(hours=4)
 
 
-def _subtitle(run: ChartRun, smma: SmmaLayer | None) -> str:
+def _subtitle(run: ChartRun, smma: SmmaLayer | None, heikin_ashi: HeikinAshiLayer | None) -> str:
     config = run.config
     graficos = ", ".join(TIMEFRAME_LABELS[timeframe] for timeframe in run.timeframes)
     faltan = (
@@ -257,13 +325,14 @@ def _subtitle(run: ChartRun, smma: SmmaLayer | None) -> str:
         if run.skipped
         else ""
     )
+    velas = "velas (normales y Heikin Ashi)" if heikin_ashi is not None else "velas"
     medias = (
         f", SMMA {smma.period} de máximos y de mínimos" if smma is not None else ""
     )
     return (
         f"{graficos} · lado {run.history.side} · día desde "
-        f"{config.aggregation.describe_daily_start()} · sin estrategia: sólo velas, "
-        f"volumen{medias} y lo que marques a mano{faltan}"
+        f"{config.aggregation.describe_daily_start()} · sin estrategia: sólo "
+        f"{velas}{medias} y lo que marques a mano{faltan}"
     )
 
 

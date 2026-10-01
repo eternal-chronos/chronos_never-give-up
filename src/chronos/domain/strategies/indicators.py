@@ -53,6 +53,32 @@ def smma(values: np.ndarray, period: int) -> np.ndarray:
     return pd.Series(seeded).ewm(alpha=1.0 / period, adjust=False).mean().to_numpy(dtype=float, copy=True)
 
 
+def heikin_ashi(
+    open_: np.ndarray, high: np.ndarray, low: np.ndarray, close: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Velas Heikin Ashi: devuelve (apertura, máximo, mínimo, cierre).
+
+    cierre   = (O + H + L + C) / 4
+    apertura = (apertura HA anterior + cierre HA anterior) / 2; la primera, (O + C) / 2
+    máximo   = max(H, apertura, cierre) y mínimo = min(L, apertura, cierre)
+
+    Es la de TradingView. La vela `i` sólo usa velas hasta `i`: la apertura mira
+    la HA anterior, nunca la siguiente.
+    """
+    o, h, low_, c = (np.asarray(values, dtype=float) for values in (open_, high, low, close))
+    ha_close = (o + h + low_ + c) / 4.0
+    if not len(ha_close):
+        empty = np.empty(0)
+        return empty, empty.copy(), empty.copy(), empty.copy()
+    # apertura[i] = (apertura[i-1] + cierre[i-1]) / 2: una media exponencial de
+    # alfa 1/2 sobre el cierre HA de la vela anterior, que arranca en (O + C) / 2.
+    previous = np.concatenate(([(o[0] + c[0]) / 2.0], ha_close[:-1]))
+    ha_open = pd.Series(previous).ewm(alpha=0.5, adjust=False).mean().to_numpy(dtype=float, copy=True)
+    ha_high = cast(np.ndarray, np.maximum.reduce([h, ha_open, ha_close]))
+    ha_low = cast(np.ndarray, np.minimum.reduce([low_, ha_open, ha_close]))
+    return ha_open, ha_high, ha_low, ha_close
+
+
 def true_range(high: np.ndarray, low: np.ndarray, close: np.ndarray) -> np.ndarray:
     """Rango verdadero: incluye el hueco respecto al cierre anterior."""
     previous_close = np.empty_like(close)

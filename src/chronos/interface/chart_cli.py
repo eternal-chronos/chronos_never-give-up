@@ -7,17 +7,19 @@ No hay ningún comando de estrategia porque todavía no hay estrategia. Cuando l
 haya, sus comandos van en su propio módulo y éste sigue haciendo lo que hace:
 enseñar las velas.
 
-También es donde se calcula la única capa del explorador —las SMMA del setup 1—
-y se le pasa hecha: el dibujo no puede importar indicadores.
+También es donde se calculan las velas Heikin Ashi y la única capa del
+explorador —las SMMA del setup 1, sobre cada tipo de vela— y se le pasan
+hechas: el dibujo no puede importar indicadores.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated
 
+import pandas as pd
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -25,11 +27,12 @@ from rich.table import Table
 from chronos.application.chart.config import TIMEFRAME_LABELS, ExplorerConfig
 from chronos.application.chart.timezone_audit import TimezoneAudit, audit_timezone
 from chronos.domain.errors import DomainError
-from chronos.domain.strategies.indicators import smma
+from chronos.domain.strategies.indicators import heikin_ashi, smma
 from chronos.infrastructure.config.loader import ConfigError, load_explorer_config
 from chronos.infrastructure.market.chart_run import ChartRun, build_chart_run
 from chronos.infrastructure.market.loader import SidedHistory, load_history
 from chronos.infrastructure.reporting.explorer import (
+    HeikinAshiLayer,
     SmmaLayer,
     bar_counts,
     build_payload,
@@ -53,14 +56,34 @@ EXPLORER_FILE = "explorador.html"
 SMMA_PERIOD = 5
 
 
-def smma_layer(run: ChartRun, period: int = SMMA_PERIOD) -> SmmaLayer:
+def smma_layer(frames: Mapping[str, pd.DataFrame], period: int = SMMA_PERIOD) -> SmmaLayer:
     """Las SMMA de máximos y de mínimos de cada temporalidad, sobre todas sus velas."""
-    frames = run.frames
     return SmmaLayer(
         period=period,
         high={tf: smma(frame["high"].to_numpy(dtype=float), period) for tf, frame in frames.items()},
         low={tf: smma(frame["low"].to_numpy(dtype=float), period) for tf, frame in frames.items()},
     )
+
+
+def heikin_ashi_frames(frames: Mapping[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+    """Las velas Heikin Ashi de cada temporalidad, calculadas sobre sus velas normales."""
+    result: dict[str, pd.DataFrame] = {}
+    for timeframe, frame in frames.items():
+        ha_open, ha_high, ha_low, ha_close = heikin_ashi(
+            *(frame[column].to_numpy(dtype=float) for column in ("open", "high", "low", "close"))
+        )
+        result[timeframe] = pd.DataFrame(
+            {"open": ha_open, "high": ha_high, "low": ha_low, "close": ha_close},
+            index=frame.index,
+        )
+    return result
+
+
+def explorer_layers(run: ChartRun) -> tuple[SmmaLayer, HeikinAshiLayer]:
+    """Lo calculado que dibuja el explorador: las SMMA de las velas normales, y las
+    velas Heikin Ashi con sus propias SMMA."""
+    candles = heikin_ashi_frames(run.frames)
+    return smma_layer(run.frames), HeikinAshiLayer(frames=candles, smma=smma_layer(candles))
 
 
 @chart_app.command("verify-tz")
@@ -120,11 +143,11 @@ def explorer(
 
         destination = out or (Path(run_config.reporting.output_dir) / EXPLORER_FILE)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        layer = smma_layer(run)
-        html = render_explorer(run, smma=layer)
+        smma_standard, candles_ha = explorer_layers(run)
+        html = render_explorer(run, smma=smma_standard, heikin_ashi=candles_ha)
         destination.write_text(html, encoding="utf-8")
 
-        payload = build_payload(run, layer)
+        payload = build_payload(run, smma_standard, candles_ha)
         velas = sum(bar_counts(payload).values())
         console.print(
             f"\n[green]OK[/green] explorador → {destination}\n"

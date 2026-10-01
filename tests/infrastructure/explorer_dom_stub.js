@@ -57,7 +57,7 @@ function declare(id) {
 // Elementos que la plantilla HTML declara de verdad.
 ['tf-buttons', 'view-buttons', 'preset-buttons', 'chart', 'zoom-reset',
  'prev', 'next', 'from', 'to',
- 'volume-layer', 'layer-volume',
+ 'volume-layer', 'layer-volume', 'smma-layer', 'layer-smma',
  'blind-seed', 'blind-start', 'blind-reveal', 'blind-exit',
  'sim-group', 'sim-buttons', 'sim-ratio', 'sim-clear',
  'rect-group', 'rect-buttons', 'rect-undo', 'rect-clear',
@@ -134,7 +134,7 @@ function engineLayer(name) {
 }
 
 /* Lo que es precio o el volumen del histórico. Todo lo demás es una capa
- * calculada, y mientras no haya estrategia no puede haber ninguna. */
+ * calculada: hoy sólo pueden serlo las SMMA, y el test lo comprueba por nombre. */
 function priceLayer(name) {
   return /^(Velas |Cierres |Vela en formación|Volumen )/.test(name || '');
 }
@@ -186,7 +186,10 @@ global.Plotly = {
           name: trace.name,
           type: trace.type,
           points: (trace.x && trace.x.length) || 0,
+          firstX: (trace.x && trace.x.length && trace.x[0]) || null,
           lastX: (trace.x && trace.x.length && trace.x[trace.x.length - 1]) || null,
+          // Las líneas llevan `y`; las velas no.
+          lastY: trace.y && trace.y.length ? trace.y[trace.y.length - 1] : null,
           yaxis: trace.yaxis || 'y',
         };
       }),
@@ -256,6 +259,7 @@ function snapshot(label) {
     lastRelayout: relayoutCalls[relayoutCalls.length - 1] || null,
     replayLocked: elements['from'].disabled === true && elements['next'].disabled === true,
     volumeBox: elements['layer-volume'].checked === true,
+    smmaBox: elements['layer-smma'].checked === true,
     simArmed: pressed('sim-buttons', 'side'),
     simClearDisabled: elements['sim-clear'].disabled === true,
     simRatio: pressed('sim-ratio', 'ratio'),
@@ -355,6 +359,12 @@ steps.push(snapshot('volumen-por-defecto'));
 elements['layer-volume'].fire('change', { target: { checked: false } });
 steps.push(snapshot('volumen-apagado'));
 elements['layer-volume'].fire('change', { target: { checked: true } });
+
+// Las SMMA sobre el precio: se apagan y se encienden sobre las mismas velas.
+steps.push(snapshot('smma-por-defecto'));
+elements['layer-smma'].fire('change', { target: { checked: false } });
+steps.push(snapshot('smma-apagadas'));
+elements['layer-smma'].fire('change', { target: { checked: true } });
 tabs[0].fire('click');
 presets[presets.length - 1].fire('click');
 steps.push(snapshot('antes-de-la-ciega'));

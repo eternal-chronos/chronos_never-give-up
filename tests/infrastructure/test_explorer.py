@@ -5,9 +5,9 @@ que dibujar, así que lo que se comprueba aquí es doble:
 
   · que el CHASIS funciona —las temporalidades, la ventana, el volumen, el
     replay, el zoom y las herramientas de mano—, y
-  · que NO dibuja nada calculado. Mientras no exista una regla, cualquier traza
-    que no sean las velas o el volumen del histórico es un error, y el test lo
-    dice con nombre.
+  · que la ÚNICA capa calculada son las dos SMMA del setup 1, que llegan hechas
+    y no se adelantan al reloj del replay. Cualquier otra traza que no sean las
+    velas o el volumen del histórico es un error, y el test lo dice con nombre.
 
 El JavaScript se ejecuta con node contra un DOM simulado: no sustituye a mirar
 el fichero en un navegador, pero detecta lo que más se rompe —identificadores
@@ -24,6 +24,7 @@ import subprocess
 from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -33,12 +34,14 @@ from chronos.application.chart.config import (
     H4,
     M5,
     M15,
+    TIMEFRAME_LABELS,
     ExplorerConfig,
     ExplorerReportingConfig,
     HistoryConfig,
     MarksConfig,
 )
 from chronos.domain.errors import DomainError
+from chronos.domain.strategies.indicators import smma
 from chronos.infrastructure.market.aggregation import aggregate, aggregate_all
 from chronos.infrastructure.market.chart_run import ChartRun, build_chart_run
 from chronos.infrastructure.market.loader import SidedHistory
@@ -47,12 +50,16 @@ from chronos.infrastructure.reporting.explorer import (
     BEARISH,
     BULLISH,
     HAND_COLORS,
+    SMMA_HIGH_COLOR,
+    SMMA_LOW_COLOR,
+    SmmaLayer,
     bar_counts,
     build_payload,
     payload_size,
     render_explorer,
 )
 from chronos.infrastructure.reporting.timezones import session_label
+from chronos.interface.chart_cli import SMMA_PERIOD, smma_layer
 from tests.conftest import make_m1_history
 
 EPOCH = pd.Timestamp("1970-01-01", tz="UTC")
@@ -83,6 +90,17 @@ def run() -> ChartRun:
     return _run()
 
 
+@pytest.fixture(scope="module")
+def layer(run: ChartRun) -> SmmaLayer:
+    """Las SMMA tal como las calcula el punto de composición."""
+    return smma_layer(run)
+
+
+@pytest.fixture(scope="module")
+def payload(run: ChartRun, layer: SmmaLayer) -> dict:
+    return build_payload(run, layer)
+
+
 # --- Payload ------------------------------------------------------------------
 
 
@@ -103,19 +121,73 @@ def test_cada_temporalidad_declara_cuanto_dura_su_vela(run: ChartRun) -> None:
     assert spans == {DAILY: 1440, H4: 240, H1: 60, M15: 15, M5: 5}
 
 
-def test_el_payload_no_lleva_ni_una_capa_calculada(run: ChartRun) -> None:
-    """Mientras no haya estrategia, lo único que viaja son velas y su volumen.
+def test_la_unica_capa_calculada_del_payload_son_las_smma(payload: dict) -> None:
+    """Mientras no haya estrategia, lo único que viaja son velas, su volumen y
+    las dos SMMA del setup 1.
 
     Es la promesa del proyecto: este explorador es un chasis. Si un día aparece
-    una clave que no sea de las de abajo, será porque alguien ha metido una capa
+    una clave que no sea de las de abajo, será porque alguien ha metido otra capa
     calculada y este test tiene que enterarse —y actualizarse a propósito—.
     """
-    payload = build_payload(run)
     assert set(payload) == {
-        "meta", "colors", "charts", "labels", "spans", "bars", "marks", "skipped"
+        "meta", "colors", "charts", "labels", "spans", "bars", "smma", "marks", "skipped"
     }
     for bars in payload["bars"].values():
         assert set(bars) == {"truncated", "total", "t", "o", "h", "l", "c", "v"}
+    assert set(payload["smma"]) == {"period", "high", "low"}
+
+
+def test_sin_capa_el_payload_no_se_inventa_ninguna(run: ChartRun) -> None:
+    """El explorador dibuja lo que le pasan: no calcula nada por su cuenta."""
+    assert build_payload(run)["smma"] is None
+
+
+def test_las_smma_son_de_5_sobre_los_maximos_y_los_minimos(run: ChartRun, payload: dict) -> None:
+    assert SMMA_PERIOD == 5
+    assert payload["smma"]["period"] == 5
+    for chart, frame in run.frames.items():
+        maximos = payload["smma"]["high"][chart]
+        minimos = payload["smma"]["low"][chart]
+        assert len(maximos) == len(minimos) == len(payload["bars"][chart]["t"])
+        # Hasta la quinta vela no hay media.
+        assert maximos[:4] == minimos[:4] == [None] * 4
+        esperado_alto = smma(frame["high"].to_numpy(dtype=float), 5)[4:]
+        esperado_bajo = smma(frame["low"].to_numpy(dtype=float), 5)[4:]
+        assert maximos[4:] == pytest.approx(esperado_alto.tolist(), abs=1e-4)
+        assert minimos[4:] == pytest.approx(esperado_bajo.tolist(), abs=1e-4)
+        # Ni cambiadas de sitio: la de los máximos nunca queda por debajo.
+        assert all(
+            alto >= bajo for alto, bajo in zip(maximos[4:], minimos[4:], strict=True)
+        )
+
+
+def test_el_recorte_no_reinicia_las_smma(run: ChartRun, layer: SmmaLayer, payload: dict) -> None:
+    """Se calculan sobre todo el histórico y se recortan por donde las velas: el
+    primer valor embebido es el de la media ya llena, no el arranque de otra."""
+    corto = replace(
+        run, config=replace(run.config, reporting=ExplorerReportingConfig(max_explorer_bars=50))
+    )
+    recortado = build_payload(corto, layer)
+    assert recortado["smma"]["high"][M15] == payload["smma"]["high"][M15][-50:]
+    assert recortado["smma"]["low"][M15] == payload["smma"]["low"][M15][-50:]
+
+
+def test_el_payload_no_lleva_nan(payload: dict) -> None:
+    """`NaN` no es JSON: el navegador no podría leer el payload."""
+    json.dumps(payload, allow_nan=False)
+
+
+def test_una_capa_desalineada_con_las_velas_no_se_serializa(run: ChartRun) -> None:
+    corta = {timeframe: np.zeros(3) for timeframe in run.timeframes}
+    with pytest.raises(ValueError, match="valores para"):
+        build_payload(run, SmmaLayer(period=5, high=corta, low=corta))
+
+
+def test_los_colores_de_las_smma_no_son_los_de_la_mano_ni_los_de_las_velas() -> None:
+    colores = {SMMA_HIGH_COLOR, SMMA_LOW_COLOR}
+    assert len(colores) == 2
+    assert not colores & set(HAND_COLORS)
+    assert not colores & {BULLISH, BEARISH}
 
 
 def test_cada_vela_lleva_su_volumen(run: ChartRun) -> None:
@@ -124,10 +196,9 @@ def test_cada_vela_lleva_su_volumen(run: ChartRun) -> None:
         assert payload["bars"][chart]["v"] == pytest.approx(frame["volume"].tolist())
 
 
-def test_el_payload_no_lleva_texto_montado(run: ChartRun) -> None:
+def test_el_payload_no_lleva_texto_montado(payload: dict) -> None:
     """Las etiquetas se componen en el navegador: con M5 de ocho años, mandar
     el texto ya hecho serían cientos de megabytes."""
-    payload = build_payload(run)
     total_velas = sum(bar_counts(payload).values())
     # Guardarraíl de tamaño, no un presupuesto ajustado: con el texto montado en
     # Python esto pasaba de 200 bytes por vela.
@@ -246,6 +317,11 @@ def test_la_cabecera_dice_que_no_hay_estrategia(run: ChartRun) -> None:
     assert "sin estrategia" in html
 
 
+def test_la_cabecera_dice_que_hay_smma(run: ChartRun, layer: SmmaLayer) -> None:
+    html = render_explorer(run, smma=layer)
+    assert "sin estrategia: sólo velas, volumen, SMMA 5 de máximos y de mínimos" in html
+
+
 def test_el_json_embebido_no_puede_cerrar_la_etiqueta_script(run: ChartRun) -> None:
     html = render_explorer(run)
     bloque = html.split('id="explorer-data"')[1].split("</script>")[0]
@@ -255,13 +331,13 @@ def test_el_json_embebido_no_puede_cerrar_la_etiqueta_script(run: ChartRun) -> N
 # --- El JavaScript, contra un DOM simulado ------------------------------------
 
 
-def _draw(run: ChartRun, tmp_path: Path) -> dict:
+def _draw(payload: dict, tmp_path: Path) -> dict:
     node = shutil.which("node")
     if node is None:
         pytest.skip("node no está disponible: no se puede ejecutar el JavaScript")
 
     payload_path = tmp_path / "payload.json"
-    payload_path.write_text(json.dumps(build_payload(run), default=str), encoding="utf-8")
+    payload_path.write_text(json.dumps(payload, default=str), encoding="utf-8")
     stub = Path(__file__).parent / "explorer_dom_stub.js"
     output = subprocess.run(
         [node, str(stub), str(ASSETS / "explorer.js"), str(payload_path)],
@@ -273,13 +349,8 @@ def _draw(run: ChartRun, tmp_path: Path) -> dict:
 
 
 @pytest.fixture(scope="module")
-def drawn(run: ChartRun, tmp_path_factory: pytest.TempPathFactory) -> dict:
-    return _draw(run, tmp_path_factory.mktemp("explorer"))
-
-
-@pytest.fixture(scope="module")
-def payload(run: ChartRun) -> dict:
-    return build_payload(run)
+def drawn(payload: dict, tmp_path_factory: pytest.TempPathFactory) -> dict:
+    return _draw(payload, tmp_path_factory.mktemp("explorer"))
 
 
 def _step(resultado: dict, label: str) -> dict:
@@ -307,15 +378,18 @@ def test_el_explorador_se_dibuja_sin_errores(drawn: dict) -> None:
     assert todo["xAnchor"] == "y"
 
 
-def test_no_se_dibuja_ni_una_capa_calculada(drawn: dict) -> None:
+def test_no_se_dibuja_mas_capa_calculada_que_las_smma(drawn: dict) -> None:
     """La promesa del proyecto, comprobada en cada paso del recorrido.
 
-    Al añadir la primera capa calculada hay que actualizar este test a
-    propósito —que acepte esa capa por su nombre—, no borrarlo.
+    La única capa calculada son las dos SMMA de la temporalidad que se mira. Al
+    añadir otra hay que actualizar este test a propósito —que la acepte por su
+    nombre—, no borrarlo.
     """
     for step in drawn["steps"]:
-        assert step["plot"]["calculated"] == [], (
-            f"en «{step['label']}» hay trazas que no son velas ni volumen: "
+        grafico = TIMEFRAME_LABELS[step["chart"]]
+        permitidas = {f"SMMA 5 máximos {grafico}", f"SMMA 5 mínimos {grafico}"}
+        assert set(step["plot"]["calculated"]) <= permitidas, (
+            f"en «{step['label']}» hay trazas que no son velas, volumen ni SMMA: "
             f"{step['plot']['calculated']}"
         )
 
@@ -330,7 +404,7 @@ def test_lo_unico_que_hay_en_shapes_lo_ha_puesto_una_mano(drawn: dict) -> None:
 def test_el_estado_dice_que_no_hay_estrategia(drawn: dict) -> None:
     """Un gráfico pelado sin decirlo se lee como que ahí no pasó nada."""
     notas = _step(drawn, "todo")["notes"]
-    assert "SIN ESTRATEGIA" in notas
+    assert "SIN ESTRATEGIA: la única capa calculada son las SMMA" in notas
     assert "lo pone tu mano" in notas
 
 
@@ -452,6 +526,44 @@ def test_el_volumen_se_apaga(drawn: dict) -> None:
     assert apagado["volumeBox"] is False
 
 
+# --- Las SMMA ---------------------------------------------------------------------
+
+
+def _smma_traces(step: dict) -> dict[str, dict]:
+    return {
+        trace["name"]: trace
+        for trace in step["plot"]["traces"]
+        if trace["name"].startswith("SMMA ")
+    }
+
+
+def test_las_smma_se_dibujan_sobre_el_precio_vela_a_vela(drawn: dict, payload: dict) -> None:
+    paso = _step(drawn, "smma-por-defecto")
+    medias = _smma_traces(paso)
+
+    assert set(medias) == {"SMMA 5 máximos H1", "SMMA 5 mínimos H1"}
+    for nombre, lado in (("SMMA 5 máximos H1", "high"), ("SMMA 5 mínimos H1", "low")):
+        traza = medias[nombre]
+        assert traza["type"] == "scatter"
+        assert traza["yaxis"] == "y", "van en el eje del precio, no en el del volumen"
+        # Un punto por vela a la vista, en la etiqueta de su vela.
+        assert traza["points"] == paso["plot"]["bars"]
+        assert traza["firstX"] == paso["plot"]["firstBar"]
+        assert traza["lastX"] == paso["plot"]["lastBar"]
+        indice = payload["bars"][H1]["t"].index(_minute(traza["lastX"]))
+        assert traza["lastY"] == payload["smma"][lado][H1][indice]
+    assert paso["smmaBox"] is True
+    assert "SMMA 5 de los MÁXIMOS (azul) y de los MÍNIMOS (naranja) de H1" in paso["notes"]
+
+
+def test_las_smma_se_apagan(drawn: dict) -> None:
+    apagadas = _step(drawn, "smma-apagadas")
+
+    assert not _smma_traces(apagadas)
+    assert "SMMA apagadas" in apagadas["notes"]
+    assert apagadas["smmaBox"] is False
+
+
 # --- Auditoría ciega ----------------------------------------------------------------
 
 
@@ -554,6 +666,20 @@ def test_la_vela_se_arma_con_la_temporalidad_inferior(drawn: dict, payload: dict
     cierre = pasos[intermedios]
     assert cierre["plot"]["lastBar"] > inicio["plot"]["lastBar"]
     assert "Vela en formación" not in _trace_names(cierre)
+
+
+def test_las_smma_no_leen_la_vela_en_formacion(drawn: dict, payload: dict) -> None:
+    """Mientras la vela se arma, las dos medias se quedan en la última cerrada."""
+    intermedios = payload["spans"][H4] // payload["spans"][H1] - 1
+    for numero in range(1, intermedios + 1):
+        paso = _step(drawn, f"replay-paso-{numero}")
+        medias = _smma_traces(paso)
+
+        assert "Vela en formación" in _trace_names(paso)
+        assert len(medias) == 2, "en el replay las SMMA siguen dibujadas"
+        for traza in medias.values():
+            assert traza["lastX"] == paso["plot"]["lastBar"]
+        assert "sin la vela en formación" in paso["notes"]
 
 
 def test_sin_vela_en_formacion_cada_paso_es_una_vela_entera(drawn: dict) -> None:

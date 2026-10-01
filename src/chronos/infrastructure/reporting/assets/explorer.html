@@ -115,6 +115,13 @@ hasta el reloj). Es el dato del histórico tal cual (en Dukascopy, el volumen de
 ticks sumado al agregar). ES DIBUJO: no decide nada.">
             <input type="checkbox" id="layer-volume" checked> Volumen</label>
         </span>
+        <span id="smma-layer">
+          <label class="toggle" title="Las dos SMMA (media móvil suavizada, alfa = 1/longitud):
+la AZUL sobre los MÁXIMOS de cada vela y la NARANJA sobre los MÍNIMOS. La longitud va en el
+nombre de cada línea. Cada valor es el de una vela CERRADA: en el replay no leen la vela en
+formación. Es la única capa calculada y no decide nada: todavía no hay reglas.">
+            <input type="checkbox" id="layer-smma" checked> SMMA máx./mín.</label>
+        </span>
       </div>
     </div>
     <div class="group" id="replay-group">
@@ -266,9 +273,13 @@ pelada: sólo las velas. Marca lo que veas y pulsa Revelar.">Auditoría ciega</s
   <div class="legend">
     <span><i style="background:#1baf7a"></i>vela alcista</span>
     <span><i style="background:#d03b3b"></i>vela bajista</span>
-    <span><b>SIN ESTRATEGIA</b>: encima del precio no hay ninguna capa calculada. Todo lo que
-      se vea además de las velas y el volumen lo ha puesto una mano —la caja simulada y los
-      recuadros— y el estado de abajo lo dice</span>
+    <span><b>SIN ESTRATEGIA</b>: la única capa calculada encima del precio son las SMMA, y no
+      deciden nada. Todo lo que se vea además de las velas, el volumen y las SMMA lo ha
+      puesto una mano —la caja simulada y los recuadros— y el estado de abajo lo dice</span>
+    <span><i style="background:#2a78d6"></i><i style="background:#eb6834"></i><b>SMMA</b>
+      de los MÁXIMOS (azul) y de los MÍNIMOS (naranja): media móvil suavizada de cada vela
+      CERRADA, con la longitud en el nombre de la línea. En el replay no leen la vela en
+      formación</span>
     <span><i class="box" style="background:#1baf7a; opacity:.35"></i>
       <i class="box" style="background:#d03b3b; opacity:.35"></i><b>VOLUMEN</b> al pie del
       precio, en las últimas 40 velas: verde si la vela cierra arriba, rojo si abajo. Es el

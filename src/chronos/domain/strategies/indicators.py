@@ -35,6 +35,24 @@ def rma(values: np.ndarray, period: int) -> np.ndarray:
     return pd.Series(values).ewm(alpha=1.0 / period, adjust=False).mean().to_numpy(dtype=float, copy=True)
 
 
+def smma(values: np.ndarray, period: int) -> np.ndarray:
+    """Media móvil suavizada (SMMA), la «Smoothed» de MT4 y TradingView.
+
+    Arranca en la media simple de los `period` primeros valores y desde ahí
+    `smma[i] = (smma[i-1] * (period - 1) + values[i]) / period`, o sea alfa =
+    1/period. Es la recursión de `rma`; sólo cambia el arranque, que deja de
+    notarse a las pocas decenas de valores.
+    """
+    _check_period(period)
+    source = np.asarray(values, dtype=float)
+    if len(source) < period:
+        return np.full(len(source), np.nan)
+    seeded = source.copy()
+    seeded[period - 1] = source[:period].mean()
+    seeded[: period - 1] = np.nan  # sin datos suficientes, sin valor
+    return pd.Series(seeded).ewm(alpha=1.0 / period, adjust=False).mean().to_numpy(dtype=float, copy=True)
+
+
 def true_range(high: np.ndarray, low: np.ndarray, close: np.ndarray) -> np.ndarray:
     """Rango verdadero: incluye el hueco respecto al cierre anterior."""
     previous_close = np.empty_like(close)

@@ -116,6 +116,9 @@ def test_explorer_escribe_el_html(workspace: Path) -> None:
     html = (workspace / "out" / "explorador.html").read_text(encoding="utf-8")
     assert '<script id="explorer-data"' in html
     assert "sin estrategia" in html
+    # El punto de composición le pasa las SMMA calculadas: sin esto, el HTML
+    # saldría sin ellas aunque el explorador sepa dibujarlas.
+    assert '"smma":{"period":5,' in html
 
 
 def test_explorer_no_dibuja_si_la_zona_horaria_no_cuadra(tmp_path: Path) -> None:

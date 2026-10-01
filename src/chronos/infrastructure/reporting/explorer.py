@@ -7,11 +7,12 @@ y poder marcar encima.
 
 **No dibuja ninguna estrategia porque todavía no hay ninguna.** Lo que sale del
 payload son las velas de cada temporalidad, su volumen tal cual lo trae el
-histórico y los nombres con los que el propietario marca a mano. El día que haya
-una capa calculada, se añade aquí y se dibuja en el JavaScript con su propia
-casilla, su entrada en la leyenda y su texto de estado; hasta entonces el
-explorador dice en cada dibujo que lo único que hay encima del precio lo ha
-puesto una mano.
+histórico, los nombres con los que el propietario marca a mano y una única capa
+calculada: las dos SMMA —de los máximos y de los mínimos— del setup 1. Llegan
+YA CALCULADAS desde el punto de composición (`SmmaLayer`): este módulo no
+importa ningún indicador, sólo las serializa alineadas con las velas. Se dibujan
+en el JavaScript con su propia casilla, su entrada en la leyenda y su texto de
+estado; todo lo demás que haya encima del precio lo ha puesto una mano.
 
 Del payload sale todo lo que se puede derivar en el navegador: las etiquetas de
 los puntos se componen en JavaScript y las marcas de tiempo viajan como minutos
@@ -24,10 +25,13 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import plotly.offline as pyo
 
@@ -51,6 +55,12 @@ BEARISH = theme.NEGATIVE
 #: lo que se vea con estos tres colores seguirá siendo lo que ha puesto una mano.
 HAND_COLORS: tuple[str, ...] = (theme.MAGENTA, theme.CYAN, theme.OLIVE)
 
+#: Las dos SMMA: azul la de los máximos y naranja la de los mínimos. Es el par
+#: categórico validado de la paleta, fuera de los colores de la mano y de las
+#: velas.
+SMMA_HIGH_COLOR = theme.SERIES[0]
+SMMA_LOW_COLOR = theme.SERIES[1]
+
 #: El volumen sólo en las últimas velas a la vista: el de muchas velas atrás no
 #: se mira y sólo ensucia.
 VOLUME_BARS = 40
@@ -63,10 +73,26 @@ DECIMALS = 4
 _EPOCH = pd.Timestamp("1970-01-01", tz="UTC")
 
 
-def render_explorer(run: ChartRun, generated_at: datetime | None = None) -> str:
+@dataclass(frozen=True, slots=True)
+class SmmaLayer:
+    """Las dos SMMA del setup 1 por temporalidad, ya calculadas.
+
+    Cada array va alineado con TODAS las velas de su temporalidad —antes de
+    cualquier recorte— y con `NaN` en el calentamiento. Se calculan fuera del
+    dibujo: si el explorador las calculara, el dibujo acabaría decidiendo.
+    """
+
+    period: int
+    high: Mapping[str, np.ndarray]
+    low: Mapping[str, np.ndarray]
+
+
+def render_explorer(
+    run: ChartRun, generated_at: datetime | None = None, smma: SmmaLayer | None = None
+) -> str:
     """Devuelve el HTML completo del explorador."""
     generated_at = generated_at or SystemClock().now()
-    payload = build_payload(run)
+    payload = build_payload(run, smma)
     # El JSON viaja dentro de un <script>: escapar `</` evita que un texto
     # cualquiera pueda cerrar la etiqueta antes de tiempo.
     data = json.dumps(payload, separators=(",", ":"), ensure_ascii=False, default=str).replace(
@@ -76,7 +102,7 @@ def render_explorer(run: ChartRun, generated_at: datetime | None = None) -> str:
     replacements = {
         "__TITLE__": f"Explorador de velas · {symbol}",
         "__HEADER__": f"{symbol} · explorador de velas · lado {run.history.side}",
-        "__SUBTITLE__": _subtitle(run),
+        "__SUBTITLE__": _subtitle(run, smma),
         "__GENERATED__": generated_at.strftime("%Y-%m-%d %H:%M:%S"),
         "__DATA__": data,
         "__PLOTLY__": pyo.get_plotlyjs(),
@@ -88,7 +114,7 @@ def render_explorer(run: ChartRun, generated_at: datetime | None = None) -> str:
     return _MARKER.sub(lambda match: replacements.get(match.group(0), match.group(0)), template)
 
 
-def build_payload(run: ChartRun) -> dict[str, Any]:
+def build_payload(run: ChartRun, smma: SmmaLayer | None = None) -> dict[str, Any]:
     """Serializa la corrida a la estructura que consume el explorador."""
     config = run.config
     frames = run.frames
@@ -118,6 +144,8 @@ def build_payload(run: ChartRun) -> dict[str, Any]:
             #: Un tono de la mano por nombre de recuadro. Ninguna capa calculada
             #: puede usarlos: con ellos sólo se dibuja lo que ha puesto una mano.
             "rects": hand_colors(config.marks.rects),
+            "smmaHigh": SMMA_HIGH_COLOR,
+            "smmaLow": SMMA_LOW_COLOR,
         },
         #: Sólo se ofrecen los gráficos que tienen velas: si el histórico no daba
         #: para construir M15 o M5, su pestaña no puede quedarse ahí esperando a
@@ -126,6 +154,8 @@ def build_payload(run: ChartRun) -> dict[str, Any]:
         "labels": {timeframe: TIMEFRAME_LABELS[timeframe] for timeframe in run.timeframes},
         "spans": {timeframe: _span_minutes(frame) for timeframe, frame in frames.items()},
         "bars": {timeframe: _bars_payload(frame, max_bars) for timeframe, frame in frames.items()},
+        #: La única capa calculada, o `None` si no se ha pasado ninguna.
+        "smma": None if smma is None else _smma_payload(smma, frames, max_bars),
         "marks": _marks(config.marks),
         #: Temporalidades pedidas que el histórico no daba para construir, con el
         #: motivo. Una pestaña que falta se lee como que no existe: hay que decirlo.
@@ -165,6 +195,30 @@ def _bars_payload(frame: pd.DataFrame, max_bars: int) -> dict[str, Any]:
     }
 
 
+def _smma_payload(
+    smma: SmmaLayer, frames: Mapping[str, pd.DataFrame], max_bars: int
+) -> dict[str, Any]:
+    return {
+        "period": smma.period,
+        "high": {tf: _layer_values(smma.high[tf], frame, max_bars) for tf, frame in frames.items()},
+        "low": {tf: _layer_values(smma.low[tf], frame, max_bars) for tf, frame in frames.items()},
+    }
+
+
+def _layer_values(values: np.ndarray, frame: pd.DataFrame, max_bars: int) -> list[float | None]:
+    """Un valor por vela, recortado por el mismo sitio que las velas.
+
+    Se calcula sobre todo el histórico y se recorta después: recortar antes
+    reiniciaría la media en la primera vela embebida. Sin valor viaja `null`
+    —el JSON no tiene `NaN`— y Plotly lo dibuja como hueco.
+    """
+    if len(values) != len(frame):
+        raise ValueError(f"la capa trae {len(values)} valores para {len(frame)} velas")
+    if 0 < max_bars < len(values):
+        values = values[-max_bars:]
+    return [None if np.isnan(value) else round(float(value), DECIMALS) for value in values]
+
+
 def _epoch_minutes(index: pd.DatetimeIndex) -> list[int]:
     utc = index.tz_convert("UTC") if index.tz is not None else index.tz_localize("UTC")
     return [int(value) for value in ((utc - _EPOCH) // pd.Timedelta(minutes=1)).to_numpy()]
@@ -195,7 +249,7 @@ def _bar_span(index: pd.DatetimeIndex) -> pd.Timedelta:
     return pd.Timedelta(deltas.mode().iloc[0]) if not deltas.empty else pd.Timedelta(hours=4)
 
 
-def _subtitle(run: ChartRun) -> str:
+def _subtitle(run: ChartRun, smma: SmmaLayer | None) -> str:
     config = run.config
     graficos = ", ".join(TIMEFRAME_LABELS[timeframe] for timeframe in run.timeframes)
     faltan = (
@@ -203,10 +257,13 @@ def _subtitle(run: ChartRun) -> str:
         if run.skipped
         else ""
     )
+    medias = (
+        f", SMMA {smma.period} de máximos y de mínimos" if smma is not None else ""
+    )
     return (
         f"{graficos} · lado {run.history.side} · día desde "
         f"{config.aggregation.describe_daily_start()} · sin estrategia: sólo velas, "
-        f"volumen y lo que marques a mano{faltan}"
+        f"volumen{medias} y lo que marques a mano{faltan}"
     )
 
 

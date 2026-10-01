@@ -16,8 +16,10 @@ estrategia corre sin cambios en backtest, paper y live**.
 el explorador para mirarlo y marcar encima a mano, y el motor de backtest con su
 contrato de estrategia (`ema_cross` es sólo la referencia del contrato).
 
-Lo primero que se escriba será una estrategia. Hasta entonces, cualquier cosa que
-se dibuje encima del precio la ha puesto una mano, y el explorador lo dice.
+Lo primero que se escriba será una estrategia. Hasta entonces, la única capa
+calculada encima del precio son las dos SMMA 5 (máximos y mínimos) del setup 1,
+que se calculan en `interface/chart_cli.py` y se le pasan hechas al explorador;
+cualquier otra cosa la ha puesto una mano, y el explorador lo dice.
 
 ## Capas
 
@@ -91,8 +93,8 @@ terminada. No hay entrega sin dibujo.
   reloj (`knownUntil`, `pending`, `clip` en `explorer.js`), no sólo por la ventana.
 - Todo lo que se dibuja se prueba: paso en `tests/infrastructure/explorer_dom_stub.js`
   y test en `tests/infrastructure/test_explorer.py`. Hay un test que exige que
-  **ninguna traza sea otra cosa que velas y volumen**
-  (`test_no_se_dibuja_ni_una_capa_calculada`): al añadir la primera capa
+  **ninguna traza sea otra cosa que velas, volumen y las SMMA**
+  (`test_no_se_dibuja_mas_capa_calculada_que_las_smma`): al añadir otra capa
   calculada hay que actualizarlo a propósito, no borrarlo.
 
 ## Cómo trabajar (disciplina del asistente)

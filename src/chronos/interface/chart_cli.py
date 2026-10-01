@@ -6,6 +6,9 @@ verificación de zona horaria, agregación M1 → M5/M15/H1/H4/D y el HTML.
 No hay ningún comando de estrategia porque todavía no hay estrategia. Cuando la
 haya, sus comandos van en su propio módulo y éste sigue haciendo lo que hace:
 enseñar las velas.
+
+También es donde se calcula la única capa del explorador —las SMMA del setup 1—
+y se le pasa hecha: el dibujo no puede importar indicadores.
 """
 
 from __future__ import annotations
@@ -22,10 +25,12 @@ from rich.table import Table
 from chronos.application.chart.config import TIMEFRAME_LABELS, ExplorerConfig
 from chronos.application.chart.timezone_audit import TimezoneAudit, audit_timezone
 from chronos.domain.errors import DomainError
+from chronos.domain.strategies.indicators import smma
 from chronos.infrastructure.config.loader import ConfigError, load_explorer_config
 from chronos.infrastructure.market.chart_run import ChartRun, build_chart_run
 from chronos.infrastructure.market.loader import SidedHistory, load_history
 from chronos.infrastructure.reporting.explorer import (
+    SmmaLayer,
     bar_counts,
     build_payload,
     payload_size,
@@ -42,6 +47,20 @@ DEFAULT_CONFIG = Path("config/explorer.yaml")
 
 #: Nombre del fichero que se escribe dentro de `reporting.output_dir`.
 EXPLORER_FILE = "explorador.html"
+
+#: Setup 1, fase 1: longitud de las dos SMMA, la de los máximos y la de los
+#: mínimos. Cuando el setup sea una estrategia, pasa a sus parámetros.
+SMMA_PERIOD = 5
+
+
+def smma_layer(run: ChartRun, period: int = SMMA_PERIOD) -> SmmaLayer:
+    """Las SMMA de máximos y de mínimos de cada temporalidad, sobre todas sus velas."""
+    frames = run.frames
+    return SmmaLayer(
+        period=period,
+        high={tf: smma(frame["high"].to_numpy(dtype=float), period) for tf, frame in frames.items()},
+        low={tf: smma(frame["low"].to_numpy(dtype=float), period) for tf, frame in frames.items()},
+    )
 
 
 @chart_app.command("verify-tz")
@@ -101,10 +120,11 @@ def explorer(
 
         destination = out or (Path(run_config.reporting.output_dir) / EXPLORER_FILE)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        html = render_explorer(run)
+        layer = smma_layer(run)
+        html = render_explorer(run, smma=layer)
         destination.write_text(html, encoding="utf-8")
 
-        payload = build_payload(run)
+        payload = build_payload(run, layer)
         velas = sum(bar_counts(payload).values())
         console.print(
             f"\n[green]OK[/green] explorador → {destination}\n"

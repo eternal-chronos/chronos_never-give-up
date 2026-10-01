@@ -5,18 +5,19 @@
  * razonar que llevar la cuenta de índices de traza.
  *
  * TODAVÍA NO HAY ESTRATEGIA. Lo que se dibuja son las velas de cada
- * temporalidad y su volumen, tal cual los trae el histórico, y encima lo que el
- * propietario marca a mano: la caja de una entrada simulada y los recuadros.
- * Nada de eso sale de aquí ni lo ve ningún motor.
+ * temporalidad y su volumen, tal cual los trae el histórico; una sola capa
+ * calculada, las SMMA de máximos y de mínimos; y encima lo que el propietario
+ * marca a mano: la caja de una entrada simulada y los recuadros. Lo de la mano
+ * no sale de aquí ni lo ve ningún motor.
  *
  * La ventana de fechas recorta los datos en vez de limitarse a mover el eje: los
  * dos ejes se autoescalan al tramo y el dibujo no arrastra ocho años de velas en
  * cada paso. Las marcas de tiempo viajan como minutos desde la época en UTC, así
  * que filtrar por fecha es comparar enteros.
  *
- * TODO LO DE ESTE FICHERO ES DIBUJO. El día que haya capas calculadas, llegarán
- * ya calculadas en el payload y aquí sólo se elegirá qué parte se pinta, cada una
- * con su casilla, su entrada en la leyenda y su texto de estado.
+ * TODO LO DE ESTE FICHERO ES DIBUJO. Las capas calculadas llegan ya calculadas
+ * en el payload y aquí sólo se elige qué parte se pinta, cada una con su
+ * casilla, su entrada en la leyenda y su texto de estado.
  *
  * El replay es la parte a mirar con lupa. Reproduce la historia paso a paso
  * desde una fecha y en cada paso dibuja SÓLO lo que se podía saber a esa hora.
@@ -57,6 +58,9 @@
     /* El volumen de cada vela al pie del precio. Nace encendido: es un
      * indicador que el propietario tiene siempre puesto. */
     volume: true,
+    /* Las SMMA de máximos y de mínimos. Nacen encendidas: son la capa que se
+     * está construyendo. */
+    smma: true,
     blind: false,      // auditoría ciega en curso
     revealed: false,
     seed: null,
@@ -204,8 +208,7 @@
 
   /* Los bordes de la ventana en minutos. Con `knownUntil`, `pending` y `clip`
    * es lo que tiene que usar una capa calculada para no adelantarse al reloj
-   * del replay. Hoy no los usa nada porque todavía no hay ninguna capa: están
-   * para que la primera no tenga que reinventarlos. */
+   * del replay: las SMMA los usan. */
   function window_(range) { return { lo: range.lo, hi: range.hi }; }
 
   function slice(range) {
@@ -489,6 +492,75 @@
     var g = parseInt(value.slice(2, 4), 16);
     var b = parseInt(value.slice(4, 6), 16);
     return "rgba(" + r + "," + g + "," + b + "," + alpha + ")";
+  }
+
+  /* --- Las SMMA de máximos y de mínimos ---------------------------------------
+   *
+   * La única capa CALCULADA: dos medias móviles suavizadas de la misma
+   * longitud, una sobre el máximo de cada vela (azul) y otra sobre el mínimo
+   * (naranja). Llegan hechas en el payload —las calcula el dominio, en el punto
+   * de composición— y aquí sólo se elige qué tramo se pinta.
+   *
+   * Cada valor es el de una vela CERRADA y va en la etiqueta de esa vela, como
+   * la propia vela. Se recortan por el mismo sitio que las velas y, en el
+   * replay, además por el reloj (`pending`): la vela en formación todavía no ha
+   * cerrado y ninguna de las dos medias la ha leído. Donde no hay valor —las
+   * primeras velas del histórico, mientras la media se llena— la línea se corta.
+   */
+  var SMMA = DATA.smma || null;
+
+  var SMMA_SIDES = [
+    { key: "high", name: "máximos", color: COLORS.smmaHigh },
+    { key: "low", name: "mínimos", color: COLORS.smmaLow }
+  ];
+
+  function hasSmma() {
+    return !!(SMMA && SMMA.high[state.chart] && SMMA.low[state.chart]);
+  }
+
+  /* En auditoría ciega el gráfico va pelado: sólo las velas. */
+  function smmaOn() { return state.smma && hasSmma() && !blindfolded(); }
+
+  function smmaName(side) {
+    return "SMMA " + SMMA.period + " " + side.name + " " + label(state.chart);
+  }
+
+  function smmaTraces(cut, edges) {
+    if (!smmaOn()) { return []; }
+    var b = bars();
+    // Sólo las velas que ya habían cerrado al reloj. Como los tiempos van en
+    // orden, lo que queda es un prefijo del corte y los valores se toman por el
+    // mismo índice.
+    var times = b.t.slice(cut.start, cut.end).filter(function (minute) {
+      return !pending(minute, state.chart, edges);
+    });
+    if (!times.length) { return []; }
+    var x = times.map(iso);
+    return SMMA_SIDES.map(function (side) {
+      var values = SMMA[side.key][state.chart].slice(cut.start, cut.start + times.length);
+      return {
+        type: "scatter", mode: "lines", name: smmaName(side),
+        x: x, y: values, connectgaps: false,
+        line: { color: side.color, width: 1.4 },
+        text: values.map(function (value, i) {
+          return smmaName(side) + "<br>" + stamp(times[i]) + "<br>" +
+            (value === null
+              ? "sin valor: todavía no hay " + SMMA.period + " velas"
+              : price(value)) +
+            "<br>media suavizada de los " + side.name + " de velas CERRADAS";
+        }),
+        hoverinfo: "text", hoverlabel: { align: "left" }
+      };
+    });
+  }
+
+  function smmaNote() {
+    if (blindfolded() || !hasSmma()) { return null; }
+    if (!state.smma) { return "SMMA apagadas"; }
+    return "SMMA " + SMMA.period + " de los MÁXIMOS (azul) y de los MÍNIMOS (naranja) de " +
+      label(state.chart) + ": media suavizada (alfa 1/" + SMMA.period + ") de las velas " +
+      "CERRADAS" + (state.replay ? ", sin la vela en formación" : "") +
+      "; es la única capa calculada y no decide nada";
   }
 
   // --- Encuadre manual -------------------------------------------------
@@ -1945,9 +2017,11 @@
     if (state.replay && state.zoom.x) { state.zoom.x = followX(state.zoom.x, now_()); }
     var range = bounds();
     var cut = slice(range);
-    // El volumen va en su eje, superpuesto al del precio. Una capa calculada
-    // nueva se concatena aquí, con su propia casilla.
-    var traces = priceTraces(cut).concat(volumeTraces(cut));
+    // Las SMMA van sobre el precio; el volumen, en su eje superpuesto. Una capa
+    // calculada nueva se concatena aquí, con su propia casilla.
+    var traces = priceTraces(cut)
+      .concat(smmaTraces(cut, window_(range)))
+      .concat(volumeTraces(cut));
 
     var figure = layout(range);
     if (volumeOn()) { figure.yaxis3 = volumeAxis(cut); }
@@ -2009,10 +2083,15 @@
     if (state.zoom.x || state.zoom.y) {
       text += " · encuadre manual: el zoom se mantiene entre pasos (Ajustar para soltarlo)";
     }
-    // Un gráfico sin capas tiene que decir que no las tiene: si no, se lee como
-    // que ahí no pasó nada.
-    text += " · SIN ESTRATEGIA: encima del precio no hay ninguna capa calculada; " +
-      "lo que se vea además de las velas y el volumen lo pone tu mano";
+    // Un gráfico tiene que decir qué capas calculadas tiene: si no, lo que no
+    // hay se lee como que ahí no pasó nada.
+    text += hasSmma()
+      ? " · SIN ESTRATEGIA: la única capa calculada son las SMMA y no deciden nada; " +
+        "lo que se vea además de las velas, el volumen y las SMMA lo pone tu mano"
+      : " · SIN ESTRATEGIA: encima del precio no hay ninguna capa calculada; " +
+        "lo que se vea además de las velas y el volumen lo pone tu mano";
+    var medias = smmaNote();
+    if (medias) { text += " · " + medias; }
     var volumen = volumeNote();
     if (volumen) { text += " · " + volumen; }
     if (!visible) {
@@ -2331,6 +2410,7 @@
     document.getElementById("rect-clear").disabled = !state.rects.length;
 
     document.getElementById("layer-volume").checked = state.volume;
+    document.getElementById("layer-smma").checked = state.smma;
     syncAccount();
     seedInput().value = state.seed === null ? "" : String(state.seed);
     document.getElementById("blind-reveal").disabled = !blindfolded();
@@ -2387,6 +2467,10 @@
     });
     document.getElementById("layer-volume").addEventListener("change", function (event) {
       state.volume = event.target.checked;
+      draw();
+    });
+    document.getElementById("layer-smma").addEventListener("change", function (event) {
+      state.smma = event.target.checked;
       draw();
     });
     seedInput().addEventListener("change", function () { state.seedTyped = true; });

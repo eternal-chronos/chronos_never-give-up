@@ -14,9 +14,9 @@ import pandas as pd
 from chronos.application.backtest.config import BacktestConfig
 from chronos.application.backtest.engine import BacktestEngine
 from chronos.application.backtest.result import BacktestResult
+from chronos.application.bars import validate_bars
 from chronos.application.metrics.performance import PerformanceReport, compute_performance
 from chronos.application.ports import Broker, MarketData
-from chronos.domain.bars import validate_bars
 from chronos.domain.errors import DomainError
 from chronos.domain.instrument import InstrumentSpec
 from chronos.domain.strategy import Strategy

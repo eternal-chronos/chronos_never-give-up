@@ -17,9 +17,9 @@ from rich.console import Console
 from rich.table import Table
 
 from chronos.application.backtest.config import BacktestConfig, DataConfig
+from chronos.application.bars import normalize_bars, resample_bars, validate_bars
 from chronos.application.metrics.performance import PerformanceReport
 from chronos.application.run_backtest import run_backtest
-from chronos.domain.bars import normalize_bars, resample_bars, validate_bars
 from chronos.domain.enums import Timeframe
 from chronos.domain.errors import DomainError
 from chronos.domain.strategies.registry import available_strategies, create_strategy
@@ -34,6 +34,7 @@ from chronos.infrastructure.data.market_data import FrameMarketData, build_marke
 from chronos.infrastructure.data.synthetic import generate_ohlcv
 from chronos.infrastructure.reporting.report import ReportWriter
 from chronos.interface.chart_cli import chart_app
+from chronos.interface.ctrader_cli import ctrader_app
 
 app = typer.Typer(
     help="Laboratorio de XAUUSD (Pepperstone / cTrader): explorador de velas y motor de backtest.",
@@ -45,6 +46,7 @@ strategy_app = typer.Typer(help="Estrategias registradas.", no_args_is_help=True
 app.add_typer(data_app, name="data")
 app.add_typer(strategy_app, name="strategy")
 app.add_typer(chart_app, name="chart")
+app.add_typer(ctrader_app, name="ctrader")
 
 console = Console()
 

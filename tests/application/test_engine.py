@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import replace
+from datetime import time
 
 import pandas as pd
 import pytest
@@ -13,7 +14,7 @@ from chronos.application.backtest.engine import BacktestEngine
 from chronos.domain.context import BarContext
 from chronos.domain.enums import ExitReason, Side
 from chronos.domain.errors import StrategyError
-from chronos.domain.instrument import InstrumentSpec
+from chronos.domain.instrument import InstrumentSpec, SessionSpec
 from chronos.domain.signal import EntrySignal, ExitSignal, StrategyAction
 from chronos.domain.strategy import Strategy
 from chronos.infrastructure.broker.simulated import build_simulated_broker
@@ -99,6 +100,44 @@ def test_el_calentamiento_bloquea_las_primeras_barras(
     engine = _engine(no_cost_spec, config)
     result = engine.run(_data(rows), LateStarter(at_bar=1))
     assert not result.trades  # la barra 1 cae dentro del calentamiento
+
+
+def test_la_estrategia_ve_todas_las_barras_tambien_en_calentamiento_y_corte(
+    no_cost_spec: InstrumentSpec, config: BacktestConfig
+) -> None:
+    """Sus indicadores son incrementales: si el motor se saltara barras, tendrían
+    huecos que en el cBot de cTrader no tienen. Lo que pida ahí se descarta."""
+
+    class Watcher(Strategy):
+        name = "test_watcher"
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.seen: list[int] = []
+
+        @property
+        def warmup_bars(self) -> int:
+            return 2
+
+        def on_bar(self, ctx: BarContext) -> Sequence[StrategyAction]:
+            self.seen.append(ctx.index)
+            return (EntrySignal(side=Side.BUY, volume=1.0),) if ctx.index in (1, 2, 3, 4) else ()
+
+    # Velas de 15 minutos desde las 00:00 UTC: las de las 00:30 y las 00:45
+    # (barras 2 y 3) caen en el corte diario del bróker.
+    with_break = replace(
+        no_cost_spec,
+        session=SessionSpec(timezone="UTC", break_start=time(0, 30), break_end=time(1, 0)),
+    )
+    rows = [(2000.0, 2001.0, 1999.0, 2000.0)] * 6
+    watcher = Watcher()
+    config = _config(config, max_concurrent_positions=5)
+    result = _engine(with_break, config).run(_data(rows), watcher)
+
+    assert watcher.seen == [0, 1, 2, 3, 4, 5]
+    # La 1 cae en el calentamiento y la 2 y la 3 en el corte: sólo vale la 4,
+    # que se ejecuta en la apertura de la 5.
+    assert [trade.entry_index for trade in result.trades] == [5]
 
 
 def test_leer_una_barra_futura_es_un_error(

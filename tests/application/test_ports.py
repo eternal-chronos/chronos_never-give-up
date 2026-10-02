@@ -8,8 +8,8 @@ import pandas as pd
 import pytest
 
 from chronos.application.backtest.config import BacktestConfig
+from chronos.application.bars import validate_bars
 from chronos.application.ports import Broker, Clock, MarketData
-from chronos.domain.bars import validate_bars
 from chronos.domain.enums import Timeframe
 from chronos.domain.instrument import InstrumentSpec
 from chronos.infrastructure.broker.simulated import build_simulated_broker

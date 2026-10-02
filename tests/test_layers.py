@@ -2,12 +2,15 @@
 
 `infrastructure → application → domain`. Nunca al revés. Y `domain/` sin red,
 disco ni reloj: si algo de eso se cuela, la misma estrategia deja de correr
-igual en backtest, paper y live.
+igual en backtest, paper y live. Además `domain/` es Python puro —sólo la
+biblioteca estándar—: viaja al cBot de cTrader, y en su nube no hay numpy ni
+pandas.
 """
 
 from __future__ import annotations
 
 import ast
+import sys
 from pathlib import Path
 
 import pytest
@@ -65,6 +68,17 @@ def test_el_dominio_no_toca_red_ni_disco_ni_reloj() -> None:
         assert "datetime.now(" not in fuente, f"{path.relative_to(SRC)} llama a datetime.now()"
         assert "Timestamp.now(" not in fuente, f"{path.relative_to(SRC)} llama a Timestamp.now()"
 
+
+
+def test_el_dominio_solo_usa_la_biblioteca_estandar() -> None:
+    """En la nube de cTrader no se pueden instalar paquetes: ni numpy ni pandas."""
+    for path in _modules("domain"):
+        for name in _imports(path):
+            raiz = name.split(".")[0]
+            assert raiz == "chronos" or raiz in sys.stdlib_module_names, (
+                f"{path.relative_to(SRC)} importa {name}: el dominio viaja al cBot "
+                "de cTrader y allí sólo hay biblioteca estándar"
+            )
 
 
 def test_el_explorador_no_sabe_que_existe_ninguna_estrategia() -> None:

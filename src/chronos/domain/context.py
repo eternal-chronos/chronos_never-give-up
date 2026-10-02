@@ -1,41 +1,56 @@
 """Contexto que la estrategia recibe en cada barra.
 
-Es una clase concreta, no un puerto: solo hay una forma de mirar una barra. El
-motor la construye una vez con los arrays de toda la serie y llama a `update`
-antes de cada `on_bar`, así que leerla es O(1) y no puede ver el futuro: todos
-los accesos se recortan en el índice actual.
+Es una clase concreta, no un puerto: solo hay una forma de mirar una barra.
+Quien la alimenta —el motor de backtest o el cBot de cTrader— le da las columnas
+como secuencias (listas de floats) y la sitúa en una barra con `update` antes de
+cada `on_bar`. Leerla es O(1) y no puede ver el futuro: todos los accesos se
+recortan en el índice actual.
+
+Python puro: viaja al cBot, donde no hay numpy ni pandas.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 
-import numpy as np
-import pandas as pd
-
-from chronos.domain.bars import PRICE_COLUMNS, columns_as_arrays
 from chronos.domain.enums import Side
 from chronos.domain.errors import StrategyError
 from chronos.domain.instrument import InstrumentSpec
 from chronos.domain.position import Position
 
+#: Columnas que una estrategia puede leer barra a barra.
+PRICE_COLUMNS = ("open", "high", "low", "close", "volume")
+
 
 class BarContext:
     """Vista de solo lectura de la barra en curso y del estado de la cuenta."""
 
-    __slots__ = ("_arrays", "_balance", "_equity", "_index", "_positions", "_spec", "_timestamps")
+    __slots__ = ("_balance", "_columns", "_equity", "_index", "_positions", "_spec", "_timestamps")
 
-    def __init__(self, bars: pd.DataFrame, spec: InstrumentSpec) -> None:
-        self._arrays = columns_as_arrays(bars)
-        self._timestamps = pd.DatetimeIndex(bars.index)
+    def __init__(
+        self,
+        columns: Mapping[str, Sequence[float]],
+        timestamps: Sequence[datetime],
+        spec: InstrumentSpec,
+    ) -> None:
+        """`columns` lleva al menos `PRICE_COLUMNS`, alineadas con `timestamps`.
+
+        No se copian: el cBot añade cada vela nueva a las mismas listas y el
+        contexto la ve sin reconstruirse.
+        """
+        missing = [name for name in PRICE_COLUMNS if name not in columns]
+        if missing:
+            raise StrategyError(f"Faltan columnas en el contexto: {', '.join(missing)}")
+        self._columns = columns
+        self._timestamps = timestamps
         self._spec = spec
         self._index = 0
         self._equity = 0.0
         self._balance = 0.0
         self._positions: tuple[Position, ...] = ()
 
-    # --- Uso interno del motor ---------------------------------------------
+    # --- Uso interno de quien la alimenta ----------------------------------
 
     def update(
         self,
@@ -59,7 +74,7 @@ class BarContext:
 
     @property
     def now(self) -> datetime:
-        return self._timestamps[self._index].to_pydatetime()
+        return self._timestamps[self._index]
 
     @property
     def open(self) -> float:
@@ -106,10 +121,6 @@ class BarContext:
 
     # --- Histórico ----------------------------------------------------------
 
-    def history(self, column: str) -> np.ndarray:
-        """Columna recortada hasta la barra actual (incluida). Vista, no copia."""
-        return self._array(column)[: self._index + 1]
-
     def value(self, column: str, offset: int = 0) -> float:
         """Valor de la columna `offset` barras atrás (0 = barra actual)."""
         if offset < 0:
@@ -117,11 +128,11 @@ class BarContext:
         position = self._index - offset
         if position < 0:
             raise StrategyError(f"Histórico insuficiente: se pidió la barra {position}")
-        return float(self._array(column)[position])
+        return float(self._column(column)[position])
 
-    def _array(self, column: str) -> np.ndarray:
+    def _column(self, column: str) -> Sequence[float]:
         try:
-            return self._arrays[column]
+            return self._columns[column]
         except KeyError:
             raise StrategyError(
                 f"Columna desconocida '{column}'. Disponibles: {', '.join(PRICE_COLUMNS)}"

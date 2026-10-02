@@ -143,16 +143,22 @@ del backtest más que la mayoría de parámetros de la estrategia.
 ```python
 # src/chronos/domain/strategies/mi_estrategia.py
 @register("mi_estrategia")
-class MiEstrategia(IndicatorStrategy):
+class MiEstrategia(Strategy):
+    def __init__(self, periodo: int = 5) -> None:
+        super().__init__(periodo=periodo)
+        self._media = Smma(periodo)          # indicador incremental
+
     @property
     def warmup_bars(self) -> int: ...
-    def compute_indicators(self, *, open_, high, low, close, volume): ...
-    def on_bar(self, ctx): return (EntrySignal(...),)
+    def on_bar(self, ctx):                   # una vez por cada vela cerrada
+        media = self._media.update(ctx.close)
+        return (EntrySignal(...),) if ... else ()
 ```
 
 1. Un fichero nuevo en `src/chronos/domain/strategies/`, decorado con
-   `@register("nombre")` y heredando de `Strategy` o de `IndicatorStrategy`.
-   Funciones puras sobre arrays: sin red, sin ficheros, sin reloj.
+   `@register("nombre")` y heredando de `Strategy`. **Python puro**, sólo
+   biblioteca estándar: es el mismo código que corre en el cBot de cTrader, y en
+   su nube no hay numpy ni pandas. Sin red, sin ficheros, sin reloj.
 2. Sus parámetros, en un dataclass congelado, y su configuración en el YAML.
 3. Sus tests en `tests/domain/`, sin mocks, con los casos límite y el test de
    no-look-ahead.
@@ -164,9 +170,10 @@ class MiEstrategia(IndicatorStrategy):
 
 Dos reglas que evitan resultados falsos:
 
-1. Los indicadores se calculan en `compute_indicators` sobre la serie completa,
-   pero **nunca con datos futuros** (nada de `shift(-1)`); `on_bar` solo lee el
-   índice actual y anteriores.
+1. Los indicadores avanzan vela a vela dentro de `on_bar`, con las clases de
+   `domain/strategies/indicators.py` (`Smma`, `HeikinAshi`, `Ema`, `Atr`...):
+   **nunca ven datos futuros**. `on_bar` se llama en todas las velas, también en
+   el calentamiento; lo que pida ahí se descarta.
 2. Los stops se expresan como **distancia** (`stop_distance`), no como precio
    absoluto: el fill ocurre en la barra siguiente y un nivel calculado sobre el
    cierre anterior puede quedar del lado equivocado.
@@ -190,19 +197,46 @@ data/
   processed/               # parquet canónico por lado
 now/explorador/            # el HTML generado. Salida, no fuente
 src/chronos/
-  domain/                  # barras, instrumento, posición, contrato de estrategia
-  domain/strategies/       # aquí va la estrategia nueva
+  domain/                  # Python puro: instrumento, posición, contrato de estrategia
+  domain/strategies/       # aquí va la estrategia nueva; indicadores incrementales
+  application/bars.py      # contrato de barras en DataFrame
   application/chart/       # configuración del explorador y verificación horaria
   application/backtest/    # motor, sesión, resultado
   infrastructure/market/   # carga del histórico y agregación de temporalidades
   infrastructure/reporting/# explorador, panel e informes  (assets/ = la fuente)
+  infrastructure/ctrader/  # el cBot: runner y empaquetado para cTrader
   interface/               # CLI: punto de composición
 tests/
 ```
 
-pandas es del dominio: `DataFrame` y `ndarray` son tipos de valor, no
-infraestructura. Lo que `domain/` no puede tocar es red, disco, base de datos ni
-`datetime.now()`.
+`domain/` es Python puro: viaja al cBot de cTrader. pandas y numpy viven en
+`application/` e `infrastructure/` (datos, backtest, métricas, dibujo). Lo que
+`domain/` no puede tocar es numpy, pandas, red, disco, base de datos ni
+`datetime.now()`; `tests/test_layers.py` lo comprueba.
+
+## El cBot de cTrader
+
+```bash
+chronos ctrader build --strategy ema_cross     # → dist/ctrader/ChronosEmaCross/
+```
+
+cTrader carga los `.py` de un cBot como módulos sueltos, sin paquetes, y en su
+nube sólo hay biblioteca estándar. El comando escribe tres ficheros:
+`chronos_core.py` (todo `domain/` más el runner, en un módulo), `<Nombre>_main.py`
+(la clase que instancia cTrader) y `<Nombre>.cs` (los parámetros del cBot, con la
+zona horaria en UTC). En cTrader Windows 5.4+ o Mac 5.7+: *New cBot* en Python con
+ese nombre, se copian los tres encima y *Build*.
+
+Qué hace el cBot: el histórico del gráfico calienta la estrategia sin operar;
+en cada vela cerrada decide y manda la orden a mercado con SL y TP en pips, que
+ejecuta el servidor aunque el cBot se pare; las posiciones se leen del bróker en
+cada vela (las de su etiqueta). Tamaño: lote fijo, % de riesgo con el valor del
+pip que da el bróker, o los lotes de la señal, con tope de lotes y de posiciones.
+
+Todavía no traduce los cierres a `on_trade_closed` (una estrategia que lo use no
+arranca) ni los límites de pérdida diaria y drawdown del backtest. Antes de dinero
+real: una instancia de demo en la nube, y mirar el log (la primera línea dice la
+versión de Python de cTrader y cuántas velas calentó).
 
 ## Datos
 
@@ -227,6 +261,6 @@ saltan solos.
 ## Hoja de ruta
 
 1. **Backtest** (actual) — construir y validar la estrategia por fases.
-2. **Demo** — adaptador de cTrader (Open API), la misma estrategia sin tocarla,
-   contrastando fills reales contra los simulados.
+2. **Demo** — el cBot de Python en la nube de cTrader (`chronos ctrader build`),
+   la misma estrategia sin tocarla, contrastando fills reales contra los simulados.
 3. **Live** — solo después de que demo confirme el comportamiento del backtest.

@@ -9,7 +9,9 @@ enseñar las velas.
 
 También es donde se calculan las velas Heikin Ashi y la única capa del
 explorador —las SMMA del setup 1, sobre cada tipo de vela— y se le pasan
-hechas: el dibujo no puede importar indicadores.
+hechas: el dibujo no puede importar indicadores. Se calculan con los mismos
+indicadores incrementales del dominio que usará la estrategia —en el backtest y
+en el cBot—: lo que se dibuja es lo que verá.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated
 
+import numpy as np
 import pandas as pd
 import typer
 from rich.console import Console
@@ -60,8 +63,8 @@ def smma_layer(frames: Mapping[str, pd.DataFrame], period: int = SMMA_PERIOD) ->
     """Las SMMA de máximos y de mínimos de cada temporalidad, sobre todas sus velas."""
     return SmmaLayer(
         period=period,
-        high={tf: smma(frame["high"].to_numpy(dtype=float), period) for tf, frame in frames.items()},
-        low={tf: smma(frame["low"].to_numpy(dtype=float), period) for tf, frame in frames.items()},
+        high={tf: np.asarray(smma(frame["high"].tolist(), period)) for tf, frame in frames.items()},
+        low={tf: np.asarray(smma(frame["low"].tolist(), period)) for tf, frame in frames.items()},
     )
 
 
@@ -70,7 +73,7 @@ def heikin_ashi_frames(frames: Mapping[str, pd.DataFrame]) -> dict[str, pd.DataF
     result: dict[str, pd.DataFrame] = {}
     for timeframe, frame in frames.items():
         ha_open, ha_high, ha_low, ha_close = heikin_ashi(
-            *(frame[column].to_numpy(dtype=float) for column in ("open", "high", "low", "close"))
+            *(frame[column].tolist() for column in ("open", "high", "low", "close"))
         )
         result[timeframe] = pd.DataFrame(
             {"open": ha_open, "high": ha_high, "low": ha_low, "close": ha_close},

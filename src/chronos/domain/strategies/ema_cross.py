@@ -2,7 +2,8 @@
 
 NO es la estrategia del proyecto. Está aquí como baseline verificable: sirve
 para comprobar que el motor, los costes, las métricas y el informe funcionan de
-punta a punta, y como plantilla de cómo se escribe una fase nueva.
+punta a punta, y como plantilla de cómo se escribe una fase nueva: indicadores
+incrementales que avanzan una vela en cada `on_bar`.
 """
 
 from __future__ import annotations
@@ -10,18 +11,16 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-import numpy as np
-
 from chronos.domain.context import BarContext
 from chronos.domain.enums import ExitReason, Side
 from chronos.domain.signal import EntrySignal, ExitSignal, StrategyAction
-from chronos.domain.strategies.base import IndicatorStrategy
-from chronos.domain.strategies.indicators import atr, ema
+from chronos.domain.strategies.indicators import Atr, Ema
 from chronos.domain.strategies.registry import register
+from chronos.domain.strategy import Strategy
 
 
 @register("ema_cross")
-class EmaCrossStrategy(IndicatorStrategy):
+class EmaCrossStrategy(Strategy):
     """Largo al cruce alcista, corto al bajista. Una posición a la vez."""
 
     def __init__(
@@ -51,33 +50,25 @@ class EmaCrossStrategy(IndicatorStrategy):
         self.sl_atr_mult = sl_atr_mult
         self.tp_atr_mult = tp_atr_mult
         self.allow_shorts = allow_shorts
+        self._fast = Ema(fast_period)
+        self._slow = Ema(slow_period)
+        self._atr = Atr(atr_period)
+        #: Medias de la vela anterior, `None` mientras alguna calienta.
+        self._previous: tuple[float, float] | None = None
 
     @property
     def warmup_bars(self) -> int:
         return max(self.slow_period, self.atr_period) + 1
 
-    def compute_indicators(
-        self,
-        *,
-        open_: np.ndarray,
-        high: np.ndarray,
-        low: np.ndarray,
-        close: np.ndarray,
-        volume: np.ndarray,
-    ) -> dict[str, np.ndarray]:
-        return {
-            "fast": ema(close, self.fast_period),
-            "slow": ema(close, self.slow_period),
-            "atr": atr(high, low, close, self.atr_period),
-        }
-
     def on_bar(self, ctx: BarContext) -> Sequence[StrategyAction]:
-        i = ctx.index
-        fast, slow = self.ind("fast", i), self.ind("slow", i)
-        fast_prev, slow_prev = self.ind("fast", i, 1), self.ind("slow", i, 1)
-        current_atr = self.ind("atr", i)
-        if not self.is_ready(fast, slow, fast_prev, slow_prev, current_atr):
+        fast = self._fast.update(ctx.close)
+        slow = self._slow.update(ctx.close)
+        current_atr = self._atr.update(ctx.high, ctx.low, ctx.close)
+        previous = self._previous
+        self._previous = None if fast is None or slow is None else (fast, slow)
+        if previous is None or fast is None or slow is None or current_atr is None:
             return ()
+        fast_prev, slow_prev = previous
 
         crossed_up = fast_prev <= slow_prev and fast > slow
         crossed_down = fast_prev >= slow_prev and fast < slow

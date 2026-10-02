@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from chronos.application.bars import normalize_bars, slice_bars, validate_bars
 from chronos.application.chart.config import HistoryConfig
-from chronos.domain.bars import normalize_bars, slice_bars, validate_bars
 from chronos.domain.errors import DomainError
 
 _SIDE_COLUMN = re.compile(r"^(bid|ask)[ _.\-]?(open|high|low|close|volume)$")

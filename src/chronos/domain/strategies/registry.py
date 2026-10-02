@@ -33,14 +33,19 @@ def register(name: str) -> Callable[[type[T]], type[T]]:
     return decorator
 
 
-def create_strategy(name: str, params: dict[str, Any] | None = None) -> Strategy:
-    """Instancia una estrategia registrada con sus parámetros."""
+def strategy_class(name: str) -> type[Strategy]:
+    """La clase registrada bajo `name`."""
     discover()
     key = name.strip().lower()
     if key not in _REGISTRY:
         available = ", ".join(sorted(_REGISTRY)) or "ninguna"
         raise StrategyError(f"Estrategia desconocida '{name}'. Disponibles: {available}")
-    return _REGISTRY[key](**(params or {}))
+    return _REGISTRY[key]
+
+
+def create_strategy(name: str, params: dict[str, Any] | None = None) -> Strategy:
+    """Instancia una estrategia registrada con sus parámetros."""
+    return strategy_class(name)(**(params or {}))
 
 
 def available_strategies() -> list[str]:
@@ -52,6 +57,6 @@ def discover() -> None:
     """Importa todos los módulos del paquete para que se auto-registren."""
     package = importlib.import_module("chronos.domain.strategies")
     for module in pkgutil.iter_modules(package.__path__):
-        if module.name in ("registry", "indicators", "base"):
+        if module.name in ("registry", "indicators"):
             continue
         importlib.import_module(f"chronos.domain.strategies.{module.name}")

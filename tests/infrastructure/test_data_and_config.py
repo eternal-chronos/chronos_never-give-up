@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 from chronos.application.backtest.session import build_bar_flags
-from chronos.domain.bars import (
+from chronos.application.bars import (
     normalize_bars,
     resample_bars,
     validate_bars,

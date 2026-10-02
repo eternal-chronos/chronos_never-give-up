@@ -7,14 +7,19 @@
 > español para comunicación y comentarios, y la regla de no hacer commit/push sin
 > autorización explícita; todo lo demás de las reglas globales queda anulado.
 
-Trading algorítmico en Python (pandas/numpy). Objetivo no negociable: **la misma
-estrategia corre sin cambios en backtest, paper y live**.
+Trading algorítmico en Python. Objetivo no negociable: **la misma estrategia corre
+sin cambios en backtest, paper y live**. Live es un cBot de Python en la nube de
+cTrader (Pepperstone): allí sólo hay biblioteca estándar, así que lo que decide
+—`domain/`— es Python puro; pandas/numpy se quedan para datos, backtest y dibujo.
 
 ## Dónde está el proyecto
 
 **Todavía no hay estrategia.** Lo que hay es el chasis: el histórico de XAUUSD,
 el explorador para mirarlo y marcar encima a mano, y el motor de backtest con su
 contrato de estrategia (`ema_cross` es sólo la referencia del contrato).
+
+El cBot de cTrader también está: `chronos ctrader build` empaqueta una estrategia
+registrada (hoy, `ema_cross`) en los ficheros que se copian a cTrader.
 
 Lo primero que se escriba será una estrategia. Hasta entonces, la única capa
 calculada encima del precio son las dos SMMA 5 (máximos y mínimos) del setup 1.
@@ -27,9 +32,12 @@ la ha puesto una mano, y el explorador lo dice.
 
 `infrastructure → application → domain`. Nunca al revés.
 
-- `domain/`: funciones puras sobre arrays. Prohibido: red, DB, ficheros, `datetime.now()`.
-- `application/`: puertos (`Protocol`) + orquestación.
-- `infrastructure/`: brokers, feeds, storage, dibujo.
+- `domain/`: Python puro, sólo biblioteca estándar. Prohibido: numpy, pandas,
+  red, DB, ficheros, `datetime.now()`. Lo hace cumplir `tests/test_layers.py`.
+- `application/`: puertos (`Protocol`) + orquestación; el contrato de barras en
+  DataFrame (`application/bars.py`) y el motor de backtest.
+- `infrastructure/`: brokers, feeds, storage, dibujo, y el cBot de cTrader
+  (`infrastructure/ctrader/`).
 
 Puertos obligatorios: `Clock`, `MarketData.bars(symbol, until)`, `Broker`.
 Cada uno con un adaptador real y uno simulado. Inyección por constructor, a mano.
@@ -38,15 +46,30 @@ No: contenedores DI, clase `UseCase` por acción, DTOs entre capas, interfaces c
 una sola implementación. Antes de agregar una abstracción, di qué bug previene o
 qué modo de ejecución habilita. Si no hay respuesta, escribe la versión simple.
 
-## pandas es del dominio
+## El dominio es Python puro
 
-`DataFrame`/`ndarray` son tipos de valor, no infraestructura. No los envuelvas en
-entidades ni itereres fila por fila. Prohibido `iterrows()`, `apply()` por filas y
-bucles Python en el hot path.
+`domain/` es lo que viaja al cBot (`chronos_core.py`), y en la nube de cTrader no
+se instala nada: ni numpy ni pandas. Por eso:
 
-Contrato de barras: índice `DatetimeIndex` UTC, monótono, sin duplicados; columnas
-`open/high/low/close/volume`; sin NaN; la barra en `t` está cerrada en `t`.
-Validar al entrar a `application/`, no en cada función.
+- La estrategia es vela a vela. `on_bar(ctx)` se llama en CADA vela cerrada,
+  también en el calentamiento y en el corte de sesión, para que sus indicadores
+  avancen sin huecos; lo que pida ahí se descarta (el motor y el cBot igual).
+- Los indicadores son clases incrementales con `update` en
+  `domain/strategies/indicators.py`; las funciones de serie completa (`smma`,
+  `heikin_ashi`...) son la misma clase recorriendo la serie. Una sola
+  implementación: lo que dibuja el explorador es lo que ve la estrategia.
+- En `on_bar`, trabajo O(1) u O(periodo): nada de recalcular el histórico entero
+  en cada vela.
+- `BarContext` recibe las columnas como listas: el motor las saca del DataFrame
+  una vez; el cBot les añade cada vela nueva.
+
+pandas/numpy sí en `application/` e `infrastructure/`: `DataFrame`/`ndarray` son
+tipos de valor, no los envuelvas en entidades. Ahí, prohibido `iterrows()`,
+`apply()` por filas y bucles Python en el hot path.
+
+Contrato de barras (`application/bars.py`): índice `DatetimeIndex` UTC, monótono,
+sin duplicados; columnas `open/high/low/close/volume`; sin NaN; la barra en `t`
+está cerrada en `t`. Validar al entrar a `application/`, no en cada función.
 
 ## Correctitud temporal
 
@@ -72,11 +95,33 @@ Validar al entrar a `application/`, no en cada función.
 - La posición la manda el broker, no tu variable en memoria.
 - Error de red → backoff. Error de validación → fallar ruidosamente.
 
+### El cBot de cTrader
+
+- cTrader carga los `.py` de un cBot como módulos planos, sin paquetes:
+  `infrastructure/ctrader/bundle.py` junta `domain/` y `runner.py` en un único
+  `chronos_core.py` y genera `<Nombre>_main.py` y `<Nombre>.cs` (parámetros,
+  `TimeZone = UTC`). `runner.py` sólo puede importar stdlib y `chronos.domain`.
+- El runner no importa `cAlgo.API`: recibe `api` y `TradeType` por constructor.
+  Sólo usa API de cTrader verificada en los ejemplos oficiales de Spotware
+  (`github.com/spotware/ctrader-python-algo-samples`); no inventes llamadas.
+- Al arrancar, el histórico del gráfico calienta la estrategia y no se opera
+  sobre él. Las posiciones se leen de `api.Positions` en cada vela (las de su
+  etiqueta y su símbolo). SL y TP viajan con la orden, en pips.
+- Lo que el cBot todavía no traduce falla al arrancar, no en silencio: una
+  estrategia con `on_trade_closed` no arranca en el cBot.
+- Lo que no se puede probar aquí —el puente de Python de cTrader, su versión de
+  Python, órdenes reales— se prueba en una instancia de demo en la nube.
+
 ## Tests
 
-- `domain/` sin mocks. Casos límite: df vacío, una barra, gaps, ventana > datos.
+- `domain/` sin mocks. Casos límite: serie vacía, una barra, gaps, ventana > datos.
 - Test de no-look-ahead: señal en `t` con datos truncados == con histórico completo.
+- Cada indicador se compara contra su versión vectorizada con pandas, que vive en
+  el test como oráculo (`tests/domain/test_indicators.py`).
 - `SimulatedBroker` modela comisiones y slippage.
+- El cBot se prueba con un doble del `Robot` de cTrader
+  (`tests/infrastructure/ctrader_fakes.py`), con un test de paridad backtest/cBot
+  y ejecutando los ficheros generados en un Python sin site-packages.
 
 ## Auditoría visual
 
@@ -131,4 +176,5 @@ no dicts sueltos. Nombres explícitos (`sma_20`, no `s20`).
 .venv/bin/python -m pytest -q        # tests
 .venv/bin/python -m ruff check src tests
 .venv/bin/python -m mypy
+.venv/bin/chronos ctrader build --strategy ema_cross   # cBot en dist/ctrader/
 ```

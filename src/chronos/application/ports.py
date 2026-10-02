@@ -30,7 +30,7 @@ class Clock(Protocol):
 
 
 class MarketData(Protocol):
-    """Fuente de barras en formato canónico (ver `domain.bars`)."""
+    """Fuente de barras en formato canónico (ver `application.bars`)."""
 
     def bars(
         self,

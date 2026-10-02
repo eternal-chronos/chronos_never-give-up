@@ -1,6 +1,6 @@
 """Adaptadores del puerto `MarketData`.
 
-Todos devuelven barras en el formato canónico de `domain.bars` y recortan aquí
+Todos devuelven barras en el formato canónico de `application.bars` y recortan aquí
 el rango pedido: la estrategia nunca ve una barra posterior a `until`.
 """
 
@@ -12,7 +12,7 @@ from pathlib import Path
 import pandas as pd
 
 from chronos.application.backtest.config import DataConfig
-from chronos.domain.bars import normalize_bars, resample_bars, slice_bars
+from chronos.application.bars import normalize_bars, resample_bars, slice_bars
 from chronos.domain.enums import Timeframe
 from chronos.domain.errors import DomainError
 from chronos.infrastructure.data.synthetic import generate_ohlcv

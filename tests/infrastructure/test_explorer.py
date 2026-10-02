@@ -190,10 +190,10 @@ def test_las_smma_son_de_5_sobre_los_maximos_y_los_minimos(run: ChartRun, payloa
         assert len(maximos) == len(minimos) == len(payload["bars"][chart]["t"])
         # Hasta la quinta vela no hay media.
         assert maximos[:4] == minimos[:4] == [None] * 4
-        esperado_alto = smma(frame["high"].to_numpy(dtype=float), 5)[4:]
-        esperado_bajo = smma(frame["low"].to_numpy(dtype=float), 5)[4:]
-        assert maximos[4:] == pytest.approx(esperado_alto.tolist(), abs=1e-4)
-        assert minimos[4:] == pytest.approx(esperado_bajo.tolist(), abs=1e-4)
+        esperado_alto = smma(frame["high"].tolist(), 5)[4:]
+        esperado_bajo = smma(frame["low"].tolist(), 5)[4:]
+        assert maximos[4:] == pytest.approx(esperado_alto, abs=1e-4)
+        assert minimos[4:] == pytest.approx(esperado_bajo, abs=1e-4)
         # Ni cambiadas de sitio: la de los máximos nunca queda por debajo.
         assert all(
             alto >= bajo
@@ -209,14 +209,14 @@ def test_las_heikin_ashi_y_sus_smma_son_las_del_dominio(run: ChartRun, payload: 
     assert capa["smma"]["period"] == 5
     for chart, frame in run.frames.items():
         esperado = heikin_ashi(
-            *(frame[columna].to_numpy(dtype=float) for columna in ("open", "high", "low", "close"))
+            *(frame[columna].tolist() for columna in ("open", "high", "low", "close"))
         )
         for clave, serie in zip(("o", "h", "l", "c"), esperado, strict=True):
-            assert _prices(capa["bars"][chart][clave]) == pytest.approx(serie.tolist(), abs=1e-4)
+            assert _prices(capa["bars"][chart][clave]) == pytest.approx(serie, abs=1e-4)
         maximos = _prices(capa["smma"]["high"][chart])
         minimos = _prices(capa["smma"]["low"][chart])
-        assert maximos[4:] == pytest.approx(smma(esperado[1], 5)[4:].tolist(), abs=1e-4)
-        assert minimos[4:] == pytest.approx(smma(esperado[2], 5)[4:].tolist(), abs=1e-4)
+        assert maximos[4:] == pytest.approx(smma(esperado[1], 5)[4:], abs=1e-4)
+        assert minimos[4:] == pytest.approx(smma(esperado[2], 5)[4:], abs=1e-4)
 
 
 def test_el_recorte_no_reinicia_las_smma_ni_las_heikin_ashi(

@@ -1,4 +1,4 @@
-"""Contrato canónico de barras. Es el tipo de valor del dominio: un DataFrame.
+"""Contrato canónico de barras: un DataFrame, validado al entrar a `application/`.
 
 Formato canónico:
     índice  : DatetimeIndex UTC, monótono, sin duplicados
@@ -7,6 +7,10 @@ Formato canónico:
 
 Aquí no se envuelve nada en entidades: las funciones son puras sobre el
 DataFrame y devuelven DataFrames. Sin red, sin ficheros, sin reloj.
+
+Vive en `application/` y no en `domain/` porque el dominio es Python puro: es
+lo que viaja al cBot de cTrader, donde no hay pandas. La estrategia no ve
+DataFrames; ve la vela en curso a través de `domain.context.BarContext`.
 """
 
 from __future__ import annotations
@@ -18,13 +22,12 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from chronos.domain.context import PRICE_COLUMNS
 from chronos.domain.enums import Timeframe
 from chronos.domain.errors import InvalidPrice
 
 REQUIRED_COLUMNS = ("open", "high", "low", "close")
 OPTIONAL_COLUMNS = ("volume", "spread")
-#: Columnas que una estrategia puede leer barra a barra.
-PRICE_COLUMNS = ("open", "high", "low", "close", "volume")
 
 _COLUMN_ALIASES = {
     "o": "open", "h": "high", "l": "low", "c": "close",

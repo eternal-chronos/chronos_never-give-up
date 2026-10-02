@@ -67,6 +67,8 @@ ignore = ["E501", "ARG002", "N818", "B027"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["ARG"]
+# El doble del Robot de cTrader se llama como la API .NET (`ExecuteMarketOrder`, `Count`...).
+"tests/infrastructure/ctrader_fakes.py" = ["ARG", "N802"]
 
 [tool.mypy]
 python_version = "3.12"

@@ -8,8 +8,10 @@ Orden de eventos dentro de cada barra (importante para no introducir lookahead):
     5. Controles de riesgo (pérdida diaria, drawdown máximo).
     6. Llamada a la estrategia con la barra ya cerrada.
 
-La estrategia nunca ve la barra en la que se ejecuta su señal, salvo que se
-configure `fill_model = current_close` (modelo optimista, solo para depurar).
+La estrategia ve TODAS las barras, para que sus indicadores incrementales
+avancen sin huecos; lo que pida durante el calentamiento o con la sesión
+cerrada se descarta. Nunca ve la barra en la que se ejecuta su señal, salvo que
+se configure `fill_model = current_close` (modelo optimista, solo para depurar).
 """
 
 from __future__ import annotations
@@ -24,10 +26,10 @@ import pandas as pd
 from chronos.application.backtest.config import BacktestConfig
 from chronos.application.backtest.result import BacktestResult
 from chronos.application.backtest.session import BarFlags, build_bar_flags
+from chronos.application.bars import columns_as_arrays
 from chronos.application.ports import Broker
 from chronos.application.risk.sizing import PositionSizer, build_sizer
-from chronos.domain.bars import columns_as_arrays
-from chronos.domain.context import BarContext
+from chronos.domain.context import PRICE_COLUMNS, BarContext
 from chronos.domain.enums import ExitReason
 from chronos.domain.errors import DomainError, InvalidOrder
 from chronos.domain.instrument import InstrumentSpec
@@ -52,10 +54,14 @@ class BacktestEngine:
         broker = self._broker
         account = broker.account
         timestamps = pd.DatetimeIndex(bars.index)
-        context = BarContext(bars, self._spec)
+        # Listas de Python, no arrays: el contexto es el mismo que alimenta el
+        # cBot, y leer una lista vela a vela es más rápido que leer un array.
+        context = BarContext(
+            {name: bars[name].tolist() for name in PRICE_COLUMNS},
+            list(timestamps.to_pydatetime()),
+            self._spec,
+        )
         flags = build_bar_flags(timestamps, self._spec)
-
-        strategy.prepare(bars)
 
         state = _RunState(
             warmup=max(strategy.warmup_bars, 1),
@@ -152,9 +158,8 @@ class BacktestEngine:
         if state.halted_reason is not None:
             return
 
-        # 6. Decisión de la estrategia sobre la barra ya cerrada.
-        if i < state.warmup or not flags.session_open[i]:
-            return
+        # 6. Decisión de la estrategia sobre la barra ya cerrada. La ve siempre;
+        # en el calentamiento o con la sesión cerrada, lo que pida se descarta.
         context.update(
             index=i,
             equity=broker.account.equity,
@@ -162,7 +167,7 @@ class BacktestEngine:
             positions=broker.positions,
         )
         actions = strategy.on_bar(context)
-        if not actions:
+        if not actions or i < state.warmup or not flags.session_open[i]:
             return
         if self._config.execution.fill_model == "current_close":
             self._execute(actions, broker, close_quote, timestamp, i, state, strategy)
